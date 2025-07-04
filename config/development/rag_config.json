@@ -1,0 +1,207 @@
+{
+  "rag_system": {
+    "name": "CAI Knowledge Retrieval System",
+    "version": "1.0.0",
+    "architecture": {
+      "retrieval_strategy": "hybrid",
+      "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+      "vector_dimension": 384,
+      "chunk_size": 512,
+      "chunk_overlap": 50,
+      "max_retrievals": 10
+    },
+    "vector_database": {
+      "primary": {
+        "type": "faiss",
+        "index_type": "IndexFlatIP",
+        "storage_path": "data/embeddings/faiss_index",
+        "backup_enabled": true,
+        "backup_interval": 3600
+      },
+      "secondary": {
+        "type": "chroma",
+        "collection_name": "cai_knowledge",
+        "storage_path": "data/embeddings/chroma_db",
+        "metadata_filtering": true
+      },
+      "cloud_backup": {
+        "enabled": false,
+        "provider": "pinecone",
+        "index_name": "cai-knowledge-index",
+        "environment": "development"
+      }
+    },
+    "embedding_engine": {
+      "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+      "model_path": "data/models/embedding_model",
+      "batch_size": 32,
+      "max_sequence_length": 512,
+      "normalize_embeddings": true,
+      "cache_embeddings": true,
+      "cache_size": 10000,
+      "device": "cpu",
+      "precision": "float32"
+    },
+    "retrieval_manager": {
+      "search_strategies": {
+        "semantic": {
+          "enabled": true,
+          "weight": 0.7,
+          "similarity_threshold": 0.7,
+          "max_results": 10
+        },
+        "keyword": {
+          "enabled": true,
+          "weight": 0.2,
+          "algorithm": "bm25",
+          "max_results": 5
+        },
+        "hybrid": {
+          "enabled": true,
+          "weight": 0.1,
+          "fusion_method": "reciprocal_rank_fusion",
+          "max_results": 8
+        }
+      },
+      "ranking_algorithm": {
+        "primary": "cosine_similarity",
+        "secondary": "relevance_score",
+        "reranking": true,
+        "diversity_penalty": 0.1
+      },
+      "filtering": {
+        "metadata_filters": true,
+        "content_type_filter": true,
+        "date_range_filter": true,
+        "source_filter": true,
+        "quality_threshold": 0.6
+      }
+    },
+    "knowledge_graph": {
+      "enabled": true,
+      "database": "neo4j",
+      "connection_uri": "bolt://localhost:7687",
+      "entity_extraction": true,
+      "relationship_mapping": true,
+      "graph_traversal": {
+        "max_depth": 3,
+        "relationship_types": [
+          "RELATED_TO",
+          "PART_OF",
+          "CAUSES",
+          "SIMILAR_TO"
+        ]
+      }
+    },
+    "document_processing": {
+      "supported_formats": [
+        "txt",
+        "pdf",
+        "docx",
+        "html",
+        "markdown",
+        "json",
+        "csv"
+      ],
+      "text_extraction": {
+        "pdf_parser": "PyPDF2",
+        "docx_parser": "python-docx",
+        "html_parser": "beautifulsoup4"
+      },
+      "preprocessing": {
+        "text_cleaning": true,
+        "language_detection": true,
+        "sentence_segmentation": true,
+        "tokenization": true,
+        "stop_word_removal": false,
+        "stemming": false,
+        "lemmatization": true
+      },
+      "chunking_strategy": {
+        "method": "recursive_character",
+        "chunk_size": 512,
+        "chunk_overlap": 50,
+        "separators": ["\n\n", "\n", ". ", " "],
+        "preserve_structure": true
+      }
+    },
+    "data_sources": {
+      "local_files": {
+        "enabled": true,
+        "watch_directories": [
+          "data/documents",
+          "data/knowledge_base"
+        ],
+        "auto_indexing": true,
+        "file_monitoring": true
+      },
+      "web_scraping": {
+        "enabled": false,
+        "allowed_domains": [],
+        "rate_limiting": true,
+        "respect_robots_txt": true
+      },
+      "apis": {
+        "wikipedia": {
+          "enabled": true,
+          "language": "en",
+          "max_articles": 100
+        },
+        "arxiv": {
+          "enabled": false,
+          "categories": ["cs.AI", "cs.CL", "cs.LG"]
+        }
+      }
+    },
+    "caching": {
+      "query_cache": {
+        "enabled": true,
+        "type": "redis",
+        "ttl": 3600,
+        "max_size": "100MB"
+      },
+      "embedding_cache": {
+        "enabled": true,
+        "type": "file_system",
+        "path": "data/cache/embeddings",
+        "max_size": "500MB"
+      },
+      "result_cache": {
+        "enabled": true,
+        "type": "memory",
+        "max_items": 1000,
+        "ttl": 1800
+      }
+    },
+    "performance": {
+      "max_query_time": 5000,
+      "batch_processing": true,
+      "parallel_retrieval": true,
+      "memory_limit": "2GB",
+      "cpu_limit": 80,
+      "monitoring": true
+    },
+    "quality_control": {
+      "relevance_scoring": true,
+      "duplicate_detection": true,
+      "content_validation": true,
+      "source_credibility": true,
+      "freshness_scoring": true
+    },
+    "security": {
+      "access_control": true,
+      "data_encryption": false,
+      "audit_logging": true,
+      "privacy_protection": true,
+      "content_filtering": true
+    },
+    "logging": {
+      "level": "info",
+      "file": "logs/system/rag.log",
+      "max_size": "50MB",
+      "backup_count": 15,
+      "query_logging": true,
+      "performance_logging": true
+    }
+  }
+}

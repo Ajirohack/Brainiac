@@ -1,0 +1,266 @@
+{
+  "app": {
+    "name": "Cognitive Agentic Intelligence Platform",
+    "version": "1.0.0",
+    "description": "A revolutionary AI system combining cognitive architecture, multi-agent collaboration, and knowledge retrieval",
+    "port": 3000,
+    "host": "localhost",
+    "environment": "development"
+  },
+  "server": {
+    "cors": {
+      "enabled": true,
+      "credentials": true,
+      "max_age": 86400,
+      "allowed_methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+      "allowed_headers": [
+        "Content-Type",
+        "Authorization",
+        "X-Requested-With",
+        "X-API-Key",
+        "X-Session-ID",
+        "X-Request-ID",
+        "Accept",
+        "Origin"
+      ],
+      "exposed_headers": [
+        "X-Total-Count",
+        "X-Page-Count",
+        "X-Rate-Limit-Remaining",
+        "X-Rate-Limit-Reset",
+        "X-Request-ID"
+      ]
+    },
+    "rate_limiting": {
+      "enabled": true,
+      "window_ms": 900000,
+      "max_requests": 100,
+      "message": "Too many requests, please try again later."
+    },
+    "security": {
+      "jwt_expiry": "24h",
+      "salt_rounds": 12,
+      "max_login_attempts": 5,
+      "lockout_duration": 900000
+    },
+    "compression": {
+      "enabled": true,
+      "level": 6,
+      "threshold": 1024
+    },
+    "body_parser": {
+      "json_limit": "10mb",
+      "url_encoded_limit": "10mb",
+      "extended": true
+    }
+  },
+  "database": {
+    "postgresql": {
+      "host": "localhost",
+      "port": 5432,
+      "database": "cai_platform",
+      "username": "cai_user",
+      "password": "cai_password",
+      "pool": {
+        "min": 2,
+        "max": 10,
+        "idle_timeout": 30000,
+        "connection_timeout": 2000
+      },
+      "ssl": false
+    },
+    "redis": {
+      "host": "localhost",
+      "port": 6379,
+      "password": null,
+      "database": 0,
+      "retry_attempts": 3,
+      "retry_delay": 1000,
+      "connection_timeout": 5000
+    },
+    "mongodb": {
+      "uri": "mongodb://localhost:27017/cai_platform",
+      "options": {
+        "useNewUrlParser": true,
+        "useUnifiedTopology": true,
+        "maxPoolSize": 10,
+        "serverSelectionTimeoutMS": 5000,
+        "socketTimeoutMS": 45000
+      }
+    }
+  },
+  "logging": {
+    "level": "info",
+    "format": "text",
+    "console": {
+      "enabled": true,
+      "colorize": true
+    },
+    "file": {
+      "enabled": true,
+      "filename": "logs/cai-platform.log",
+      "max_size": "20m",
+      "max_files": 5,
+      "date_pattern": "YYYY-MM-DD"
+    },
+    "error_file": {
+      "enabled": true,
+      "filename": "logs/error.log",
+      "level": "error"
+    }
+  },
+  "monitoring": {
+    "enabled": true,
+    "metrics_frequency": 30000,
+    "health_frequency": 60000,
+    "alert_frequency": 10000,
+    "cpu_threshold": 80,
+    "memory_threshold": 85,
+    "response_time_threshold": 5000,
+    "error_rate_threshold": 5,
+    "max_metrics_retention": 1000
+  },
+  "brain": {
+    "cognitive_layers": {
+      "perception": {
+        "enabled": true,
+        "timeout": 5000,
+        "max_input_size": 1048576,
+        "supported_formats": ["text", "json", "image", "audio"]
+      },
+      "attention": {
+        "enabled": true,
+        "timeout": 3000,
+        "focus_threshold": 0.7,
+        "max_focus_items": 10
+      },
+      "memory": {
+        "enabled": true,
+        "timeout": 2000,
+        "short_term_capacity": 100,
+        "long_term_capacity": 10000,
+        "retention_period": 86400000
+      },
+      "reasoning": {
+        "enabled": true,
+        "timeout": 10000,
+        "max_reasoning_depth": 5,
+        "confidence_threshold": 0.6
+      },
+      "emotion": {
+        "enabled": true,
+        "timeout": 2000,
+        "emotion_decay_rate": 0.1,
+        "max_emotion_intensity": 1.0
+      },
+      "decision": {
+        "enabled": true,
+        "timeout": 5000,
+        "decision_threshold": 0.8,
+        "max_alternatives": 5
+      },
+      "action": {
+        "enabled": true,
+        "timeout": 15000,
+        "max_concurrent_actions": 3,
+        "action_retry_attempts": 2
+      }
+    },
+    "processing": {
+      "max_concurrent_requests": 10,
+      "request_timeout": 30000,
+      "memory_cleanup_interval": 300000
+    }
+  },
+  "agents": {
+    "council": {
+      "max_agents": 10,
+      "collaboration_timeout": 30000,
+      "consensus_threshold": 0.7
+    },
+    "knowledge_agent": {
+      "enabled": true,
+      "knowledge_base_size": 1000000,
+      "query_timeout": 5000
+    },
+    "reasoning_agent": {
+      "enabled": true,
+      "reasoning_timeout": 10000,
+      "max_reasoning_steps": 10
+    },
+    "content_agent": {
+      "enabled": true,
+      "content_generation_timeout": 15000,
+      "max_content_length": 10000
+    },
+    "tools_agent": {
+      "enabled": true,
+      "tool_execution_timeout": 20000,
+      "max_concurrent_tools": 5
+    }
+  },
+  "rag": {
+    "embedding": {
+      "model": "text-embedding-ada-002",
+      "dimensions": 1536,
+      "batch_size": 100,
+      "timeout": 10000
+    },
+    "vector_database": {
+      "type": "redis",
+      "index_name": "cai_embeddings",
+      "similarity_threshold": 0.8,
+      "max_results": 10
+    },
+    "retrieval": {
+      "max_documents": 5,
+      "relevance_threshold": 0.7,
+      "rerank_enabled": true
+    },
+    "synthesis": {
+      "max_context_length": 8000,
+      "temperature": 0.7,
+      "max_tokens": 2000
+    }
+  },
+  "api": {
+    "version": "v1",
+    "base_path": "/api",
+    "documentation": {
+      "enabled": true,
+      "path": "/docs",
+      "title": "CAI Platform API",
+      "version": "1.0.0"
+    },
+    "websocket": {
+      "enabled": true,
+      "path": "/ws",
+      "cors": {
+        "origin": "*",
+        "methods": ["GET", "POST"]
+      }
+    }
+  },
+  "external_services": {
+    "openai": {
+      "api_key": null,
+      "organization": null,
+      "base_url": "https://api.openai.com/v1",
+      "timeout": 30000,
+      "max_retries": 3
+    },
+    "langchain": {
+      "cache_enabled": true,
+      "cache_ttl": 3600
+    }
+  },
+  "features": {
+    "cognitive_processing": true,
+    "multi_agent_collaboration": true,
+    "knowledge_retrieval": true,
+    "real_time_communication": true,
+    "performance_monitoring": true,
+    "security_features": true,
+    "api_documentation": true
+  }
+}

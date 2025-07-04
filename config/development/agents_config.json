@@ -1,0 +1,211 @@
+{
+  "agents": {
+    "system_name": "CAI Multi-Agent Council",
+    "version": "1.0.0",
+    "architecture": {
+      "coordination_model": "hierarchical",
+      "communication_protocol": "message_passing",
+      "decision_making": "consensus_based",
+      "parallel_execution": true,
+      "max_concurrent_agents": 5
+    },
+    "decision_maker": {
+      "name": "DecisionMaker",
+      "type": "coordinator",
+      "enabled": true,
+      "priority": 1,
+      "capabilities": [
+        "task_delegation",
+        "result_synthesis",
+        "conflict_resolution",
+        "quality_assurance",
+        "performance_monitoring"
+      ],
+      "decision_algorithms": [
+        "weighted_voting",
+        "expert_consensus",
+        "utility_maximization"
+      ],
+      "timeout": 10000,
+      "retry_attempts": 3,
+      "confidence_threshold": 0.8
+    },
+    "knowledge_agent": {
+      "name": "KnowledgeAgent",
+      "type": "specialist",
+      "enabled": true,
+      "priority": 2,
+      "capabilities": [
+        "information_retrieval",
+        "data_analysis",
+        "knowledge_synthesis",
+        "fact_verification",
+        "source_validation"
+      ],
+      "knowledge_sources": [
+        "vector_database",
+        "knowledge_graph",
+        "external_apis",
+        "document_store"
+      ],
+      "retrieval_strategies": [
+        "semantic_search",
+        "keyword_matching",
+        "hybrid_search"
+      ],
+      "max_sources": 10,
+      "relevance_threshold": 0.7,
+      "timeout": 5000
+    },
+    "reasoning_agent": {
+      "name": "ReasoningAgent",
+      "type": "specialist",
+      "enabled": true,
+      "priority": 2,
+      "capabilities": [
+        "logical_reasoning",
+        "problem_solving",
+        "strategy_development",
+        "pattern_recognition",
+        "causal_analysis"
+      ],
+      "reasoning_types": [
+        "deductive",
+        "inductive",
+        "abductive",
+        "analogical",
+        "causal"
+      ],
+      "problem_solving_methods": [
+        "divide_and_conquer",
+        "backward_chaining",
+        "forward_chaining",
+        "constraint_satisfaction"
+      ],
+      "max_inference_depth": 5,
+      "confidence_threshold": 0.75,
+      "timeout": 7000
+    },
+    "content_agent": {
+      "name": "ContentAgent",
+      "type": "specialist",
+      "enabled": true,
+      "priority": 3,
+      "capabilities": [
+        "content_creation",
+        "style_adaptation",
+        "language_generation",
+        "format_conversion",
+        "quality_enhancement"
+      ],
+      "content_types": [
+        "explanatory",
+        "persuasive",
+        "informative",
+        "creative",
+        "technical"
+      ],
+      "writing_styles": [
+        "formal",
+        "casual",
+        "academic",
+        "conversational",
+        "technical"
+      ],
+      "output_formats": [
+        "text",
+        "markdown",
+        "html",
+        "json",
+        "structured"
+      ],
+      "quality_metrics": [
+        "clarity",
+        "coherence",
+        "completeness",
+        "accuracy",
+        "engagement"
+      ],
+      "timeout": 6000
+    },
+    "tool_agent": {
+      "name": "ToolAgent",
+      "type": "specialist",
+      "enabled": true,
+      "priority": 3,
+      "capabilities": [
+        "tool_integration",
+        "api_management",
+        "function_execution",
+        "data_transformation",
+        "external_communication"
+      ],
+      "available_tools": [
+        "web_search",
+        "calculator",
+        "file_operations",
+        "data_analysis",
+        "image_processing",
+        "code_execution"
+      ],
+      "api_integrations": [
+        "openai",
+        "google_search",
+        "wikipedia",
+        "weather_api",
+        "news_api"
+      ],
+      "security_level": "high",
+      "sandbox_execution": true,
+      "timeout": 8000,
+      "retry_attempts": 2
+    },
+    "communication": {
+      "message_format": "json",
+      "encryption": false,
+      "compression": true,
+      "message_queue": {
+        "type": "redis",
+        "max_size": 1000,
+        "ttl": 3600
+      },
+      "broadcast_channels": [
+        "coordination",
+        "knowledge_sharing",
+        "status_updates",
+        "error_reporting"
+      ]
+    },
+    "shared_context": {
+      "storage_type": "redis",
+      "max_size": "50MB",
+      "ttl": 7200,
+      "synchronization": true,
+      "conflict_resolution": "last_writer_wins"
+    },
+    "performance": {
+      "max_execution_time": 15000,
+      "memory_limit": "1GB",
+      "cpu_limit": 70,
+      "monitoring": true,
+      "load_balancing": true
+    },
+    "error_handling": {
+      "retry_policy": "exponential_backoff",
+      "max_retries": 3,
+      "fallback_strategies": [
+        "graceful_degradation",
+        "alternative_agent",
+        "simplified_response"
+      ],
+      "error_reporting": true
+    },
+    "logging": {
+      "level": "info",
+      "file": "logs/system/agents.log",
+      "max_size": "20MB",
+      "backup_count": 10,
+      "structured_logging": true
+    }
+  }
+}

@@ -1,0 +1,237 @@
+{
+  "app": {
+    "environment": "production",
+    "port": 8080,
+    "host": "0.0.0.0",
+    "debug": false
+  },
+  "server": {
+    "cors": {
+      "allowed_origins": [
+        "https://cai-platform.com",
+        "https://app.cai-platform.com",
+        "https://api.cai-platform.com"
+      ]
+    },
+    "rate_limiting": {
+      "enabled": true,
+      "window_ms": 900000,
+      "max_requests": 100
+    },
+    "security": {
+      "jwt_expiry": "1h",
+      "salt_rounds": 14,
+      "max_login_attempts": 3,
+      "lockout_duration": 1800000
+    },
+    "compression": {
+      "enabled": true,
+      "level": 9
+    }
+  },
+  "database": {
+    "postgresql": {
+      "host": "${DB_HOST}",
+      "port": "${DB_PORT}",
+      "database": "${DB_NAME}",
+      "username": "${DB_USER}",
+      "password": "${DB_PASSWORD}",
+      "pool": {
+        "min": 5,
+        "max": 20,
+        "idle_timeout": 10000,
+        "connection_timeout": 1000
+      },
+      "ssl": true
+    },
+    "redis": {
+      "host": "${REDIS_HOST}",
+      "port": "${REDIS_PORT}",
+      "password": "${REDIS_PASSWORD}",
+      "database": 0,
+      "retry_attempts": 5,
+      "retry_delay": 2000,
+      "connection_timeout": 3000
+    },
+    "mongodb": {
+      "uri": "${MONGODB_URI}",
+      "options": {
+        "maxPoolSize": 20,
+        "serverSelectionTimeoutMS": 3000,
+        "socketTimeoutMS": 30000
+      }
+    }
+  },
+  "logging": {
+    "level": "warn",
+    "format": "json",
+    "console": {
+      "enabled": false
+    },
+    "file": {
+      "enabled": true,
+      "filename": "/var/log/cai-platform/app.log",
+      "max_size": "50m",
+      "max_files": 10
+    },
+    "error_file": {
+      "enabled": true,
+      "filename": "/var/log/cai-platform/error.log"
+    }
+  },
+  "monitoring": {
+    "enabled": true,
+    "metrics_frequency": 60000,
+    "health_frequency": 120000,
+    "alert_frequency": 30000,
+    "cpu_threshold": 70,
+    "memory_threshold": 80,
+    "response_time_threshold": 3000,
+    "error_rate_threshold": 2,
+    "max_metrics_retention": 2000
+  },
+  "brain": {
+    "cognitive_layers": {
+      "perception": {
+        "timeout": 3000,
+        "max_input_size": 524288
+      },
+      "attention": {
+        "timeout": 2000,
+        "max_focus_items": 5
+      },
+      "memory": {
+        "timeout": 1500,
+        "short_term_capacity": 200,
+        "long_term_capacity": 50000
+      },
+      "reasoning": {
+        "timeout": 8000,
+        "max_reasoning_depth": 7,
+        "confidence_threshold": 0.8
+      },
+      "emotion": {
+        "timeout": 1500
+      },
+      "decision": {
+        "timeout": 4000,
+        "decision_threshold": 0.9
+      },
+      "action": {
+        "timeout": 12000,
+        "max_concurrent_actions": 5
+      }
+    },
+    "processing": {
+      "max_concurrent_requests": 20,
+      "request_timeout": 25000,
+      "memory_cleanup_interval": 180000
+    }
+  },
+  "agents": {
+    "council": {
+      "max_agents": 15,
+      "collaboration_timeout": 20000,
+      "consensus_threshold": 0.8
+    },
+    "knowledge_agent": {
+      "knowledge_base_size": 5000000,
+      "query_timeout": 3000
+    },
+    "reasoning_agent": {
+      "reasoning_timeout": 8000,
+      "max_reasoning_steps": 15
+    },
+    "content_agent": {
+      "content_generation_timeout": 10000,
+      "max_content_length": 20000
+    },
+    "tools_agent": {
+      "tool_execution_timeout": 15000,
+      "max_concurrent_tools": 10
+    }
+  },
+  "rag": {
+    "embedding": {
+      "batch_size": 200,
+      "timeout": 8000
+    },
+    "vector_database": {
+      "similarity_threshold": 0.85,
+      "max_results": 5
+    },
+    "retrieval": {
+      "max_documents": 3,
+      "relevance_threshold": 0.8
+    },
+    "synthesis": {
+      "max_context_length": 6000,
+      "temperature": 0.5,
+      "max_tokens": 1500
+    }
+  },
+  "api": {
+    "documentation": {
+      "enabled": false
+    },
+    "websocket": {
+      "cors": {
+        "origin": ["https://cai-platform.com", "https://app.cai-platform.com"]
+      }
+    }
+  },
+  "external_services": {
+    "openai": {
+      "api_key": "${OPENAI_API_KEY}",
+      "organization": "${OPENAI_ORG_ID}",
+      "timeout": 20000,
+      "max_retries": 2
+    }
+  },
+  "features": {
+    "cognitive_processing": true,
+    "multi_agent_collaboration": true,
+    "knowledge_retrieval": true,
+    "real_time_communication": true,
+    "performance_monitoring": true,
+    "security_features": true,
+    "api_documentation": false,
+    "hot_reload": false,
+    "debug_mode": false,
+    "verbose_logging": false,
+    "development_tools": false
+  },
+  "performance": {
+    "clustering": {
+      "enabled": true,
+      "workers": "auto"
+    },
+    "caching": {
+      "enabled": true,
+      "ttl": 3600,
+      "max_size": "100mb"
+    },
+    "optimization": {
+      "gzip_compression": true,
+      "static_file_caching": true,
+      "response_caching": true
+    }
+  },
+  "security": {
+    "https": {
+      "enabled": true,
+      "force_redirect": true
+    },
+    "headers": {
+      "hsts": true,
+      "content_security_policy": true,
+      "x_frame_options": "DENY",
+      "x_content_type_options": "nosniff"
+    },
+    "session": {
+      "secure": true,
+      "http_only": true,
+      "same_site": "strict"
+    }
+  }
+}

@@ -1,0 +1,784 @@
+const jwt = require('jsonwebtoken');
+const sinon = require('sinon');
+const SecurityMiddleware = require('../../../src/core/middleware/securityMiddleware');
+
+// Mock jwt module first
+jest.mock('jsonwebtoken');
+
+// Mock the logger module with a simple implementation
+jest.mock('../../../src/core/utils/logger', () => {
+  const mockLogger = {
+    log: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn()
+  };
+  
+  return {
+    Logger: jest.fn().mockImplementation(() => mockLogger)
+  };
+});
+
+// Mock the rate limiter to avoid actual rate limiting in tests
+jest.mock('../../../src/core/middleware/rateLimiter', () => {
+  const mockRateLimiter = {
+    consume: jest.fn().mockResolvedValue(),
+    getRateLimitInfo: jest.fn(() => ({
+      limit: 100,
+      current: 0,
+      remaining: 100,
+      resetTime: Date.now() + 60000
+    })),
+    // Mock the middleware method for backward compatibility
+    middleware: function(req, res, next) {
+      this.consume(req).then(next).catch(next);
+    }
+  };
+  
+  return {
+    RateLimiter: jest.fn().mockImplementation(() => mockRateLimiter)
+  };
+});
+
+// Mock Express request/response objects
+const createMockRequest = (opts = {}) => ({
+  headers: {},
+  method: 'GET',
+  path: '/api/test',
+  ip: '192.168.1.1',
+  secure: true,
+  ...opts,
+  get: function(header) { return this.headers[header.toLowerCase()]; }
+});
+
+const createMockResponse = () => {
+  const res = {};
+  res.status = jest.fn().mockReturnValue(res);
+  res.json = jest.fn().mockReturnValue(res);
+  res.header = jest.fn().mockReturnValue(res);
+  res.set = jest.fn().mockReturnValue(res);
+  res.setHeader = jest.fn().mockReturnValue(res);
+  res.send = jest.fn().mockReturnValue(res);
+  res.end = jest.fn();
+  return res;
+};
+
+// Helper function to create a next function
+const createNext = () => jest.fn();
+
+describe('Security Middleware', () => {
+  let security;
+  let clock;
+  
+  beforeEach(() => {
+    // Clear all mocks before each test
+    jest.clearAllMocks();
+    
+    // Only set up fake timers if they're not already set up
+    if (!clock) {
+      clock = sinon.useFakeTimers({
+        now: new Date(2023, 0, 1),
+        shouldAdvanceTime: true
+      });
+    }
+    
+    // Create a new security middleware instance for each test
+    security = new SecurityMiddleware({
+      jwtSecret: 'test-secret',
+      jwtExpiresIn: '1h',
+      requireApiKey: true,
+      apiKeys: ['test-api-key'],
+      corsOptions: {
+        origin: 'https://example.com',
+        methods: ['GET', 'POST'],
+        allowedHeaders: ['Content-Type', 'Authorization']
+      },
+      rateLimit: {
+        windowMs: 15 * 60 * 1000, // 15 minutes
+        max: 100 // limit each IP to 100 requests per windowMs
+      },
+      // Disable logging for tests
+      logger: {
+        logToConsole: false
+      }
+    });
+  });
+  
+  afterEach(() => {
+    // Ensure any intervals are cleared after each test
+    jest.clearAllTimers();
+  });
+  
+  afterAll(() => {
+    // Restore timers once after all tests
+    if (clock) {
+      clock.restore();
+      clock = null;
+    }
+    // Clean up any remaining mocks
+    jest.restoreAllMocks();
+  });
+
+  describe('Security Headers', () => {
+    let req, res, next;
+    let originalConfig;
+    
+    beforeEach(() => {
+      req = createMockRequest({
+        headers: {
+          'x-forwarded-proto': 'https'
+        }
+      });
+      res = createMockResponse();
+      next = createNext();
+      
+      // Store original config
+      originalConfig = { ...security.config.securityHeaders };
+      
+      // Reset all mocks before each test
+      jest.clearAllMocks();
+    });
+    
+    afterEach(() => {
+      // Restore original config
+      security.config.securityHeaders = originalConfig;
+    });
+    
+    it('should set basic security headers', () => {
+      // Disable CSP and CORS for this test
+      security.config.securityHeaders.enableCSP = false;
+      security.config.securityHeaders.enableCORS = false;
+      
+      security.securityHeaders()(req, res, next);
+      
+      // Verify next() was called
+      expect(next).toHaveBeenCalled();
+      
+      // Verify security headers were set
+      expect(res.setHeader).toHaveBeenCalledWith('X-Content-Type-Options', 'nosniff');
+      expect(res.setHeader).toHaveBeenCalledWith('X-Frame-Options', 'DENY');
+      expect(res.setHeader).toHaveBeenCalledWith('X-XSS-Protection', '1; mode=block');
+      expect(res.setHeader).toHaveBeenCalledWith('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+      
+      // CSP and CORS headers should not be set
+      expect(res.setHeader).not.toHaveBeenCalledWith('Content-Security-Policy', expect.any(String));
+      expect(res.setHeader).not.toHaveBeenCalledWith('Access-Control-Allow-Origin', expect.any(String));
+    });
+    
+    it('should include CSP header when enabled', () => {
+      // Enable CSP
+      security.config.securityHeaders.enableCSP = true;
+      security.config.securityHeaders.enableCORS = false;
+      
+      security.securityHeaders()(req, res, next);
+      
+      // Verify CSP header is set
+      expect(res.setHeader).toHaveBeenCalledWith('Content-Security-Policy', expect.any(String));
+    });
+    
+    it('should include CORS headers when enabled', () => {
+      // Enable CORS
+      security.config.securityHeaders.enableCORS = true;
+      security.config.securityHeaders.enableCSP = false;
+      
+      // Set up test origin
+      const testOrigin = 'https://example.com';
+      security.config.securityHeaders.allowedOrigins = [testOrigin];
+      req.headers.origin = testOrigin;
+      
+      security.securityHeaders()(req, res, next);
+      
+      // Verify CORS headers are set
+      expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Allow-Origin', testOrigin);
+      expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key');
+      expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Allow-Credentials', 'true');
+    });
+  });
+
+  describe('CORS', () => {
+    it('should handle OPTIONS requests', async () => {
+      const req = createMockRequest({
+        method: 'OPTIONS',
+        headers: {
+          origin: 'https://example.com'
+        }
+      });
+      
+      const res = createMockResponse();
+      const next = createNext();
+      
+      // Mock the send method
+      const mockSend = jest.fn();
+      res.send = mockSend;
+      
+      // Call the CORS middleware
+      security.cors()(req, res, next);
+      
+      // For OPTIONS request, it should respond with 204 and call send()
+      expect(res.status).toHaveBeenCalledWith(204);
+      expect(mockSend).toHaveBeenCalled();
+      
+      // next() should not be called for OPTIONS requests
+      expect(next).not.toHaveBeenCalled();
+      
+      // Verify CORS headers
+      expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Allow-Origin', 'https://example.com');
+      expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key');
+      expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Allow-Credentials', 'true');
+      expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Max-Age', '86400');
+    });
+  });
+
+  describe('Rate Limiting', () => {
+    let originalMiddleware;
+    
+    beforeEach(() => {
+      // Store the original middleware method
+      originalMiddleware = security.rateLimiter.middleware;
+      // Mock the middleware to call next() by default
+      security.rateLimiter.middleware = jest.fn((req, res, next) => next());
+    });
+    
+    afterEach(() => {
+      // Restore the original middleware method after each test
+      security.rateLimiter.middleware = originalMiddleware;
+      jest.clearAllMocks();
+    });
+    
+    it('should allow requests under the limit', async () => {
+      const req = createMockRequest();
+      const res = createMockResponse();
+      const next = createNext();
+      
+      // Mock the middleware to call next()
+      security.rateLimiter.middleware = jest.fn((req, res, next) => {
+        // Simulate adding rate limit headers
+        res.set({
+          'RateLimit-Limit': 100,
+          'RateLimit-Remaining': 99,
+          'RateLimit-Reset': Math.floor((Date.now() + 60000) / 1000)
+        });
+        next();
+      });
+      
+      // Make a request
+      await security.rateLimit()(req, res, next);
+      
+      // Should call next() without rate limiting
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(res.status).not.toHaveBeenCalledWith(429);
+      
+      // Verify rate limit headers were set
+      expect(security.rateLimiter.middleware).toHaveBeenCalledWith(
+        req,
+        expect.objectContaining({
+          set: expect.any(Function)
+        }),
+        expect.any(Function)
+      );
+    }, 10000);
+    
+    it('should block requests over the limit', async () => {
+      const req = createMockRequest();
+      const res = createMockResponse();
+      const next = createNext();
+      
+      // Mock the middleware to simulate rate limit exceeded
+      security.rateLimiter.middleware = jest.fn((req, res, next) => {
+        // Simulate rate limit exceeded
+        res.status(429).json({
+          status: 'error',
+          code: 'rate_limit_exceeded',
+          message: 'Too many requests, please try again later',
+          retryAfter: 60
+        });
+      });
+      
+      // Make a request that should be rate limited
+      await security.rateLimit()(req, res, next);
+      
+      // Should respond with 429 and not call next()
+      expect(res.status).toHaveBeenCalledWith(429);
+      expect(res.json).toHaveBeenCalledWith({
+        status: 'error',
+        code: 'rate_limit_exceeded',
+        message: 'Too many requests, please try again later',
+        retryAfter: 60
+      });
+      expect(next).not.toHaveBeenCalled();
+    }, 10000);
+    
+    it('should handle rate limiter errors gracefully', async () => {
+      const req = createMockRequest();
+      const res = createMockResponse();
+      const next = createNext();
+      
+      // Mock the middleware to throw an error
+      security.rateLimiter.middleware = jest.fn(() => {
+        throw new Error('Unexpected error');
+      });
+      
+      // Make a request that causes a rate limiter error
+      await security.rateLimit()(req, res, next);
+      
+      // Should pass the error to next()
+      expect(next).toHaveBeenCalledWith(expect.any(Error));
+      expect(res.status).not.toHaveBeenCalled();
+    }, 10000);
+  });
+
+  describe('API Key Validation', () => {
+    it('should validate API key from header', () => {
+      const req = createMockRequest({
+        headers: { 'x-api-key': 'test-api-key' }
+      });
+      
+      const res = createMockResponse();
+      const next = createNext();
+      
+      security.validateApiKey()(req, res, next);
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(res.status).not.toHaveBeenCalled();
+    });
+
+    it('should reject invalid API key', () => {
+      const req = createMockRequest({
+        headers: { 'x-api-key': 'invalid-key' }
+      });
+      
+      const res = createMockResponse();
+      const next = createNext();
+      
+      security.validateApiKey()(req, res, next);
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'error',
+        code: 'invalid_api_key'
+      }));
+      expect(next).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Token Generation and Verification', () => {
+    it('should generate a valid JWT token', async () => {
+      const payload = { userId: '123', role: 'user' };
+      const mockToken = 'mocked.jwt.token';
+      
+      // Mock jwt.sign to return a fixed token
+      jwt.sign.mockImplementation((payload, secret, options, callback) => {
+        callback(null, mockToken);
+      });
+      
+      const token = await new Promise((resolve, reject) => {
+        security.generateToken(payload, (err, token) => {
+          if (err) reject(err);
+          else resolve(token);
+        });
+      });
+      
+      expect(token).toBe(mockToken);
+      expect(jwt.sign).toHaveBeenCalledWith(
+        payload,
+        'test-secret',
+        { expiresIn: '1h' },
+        expect.any(Function)
+      );
+    });
+    
+    it('should verify a valid token', async () => {
+      const payload = { userId: '123', role: 'user' };
+      const mockToken = 'valid.jwt.token';
+      
+      // Mock jwt.verify to return the payload
+      jwt.verify.mockImplementation((token, secret, callback) => {
+        callback(null, payload);
+      });
+      
+      const decoded = await security.verifyToken(mockToken);
+      expect(decoded).toEqual(payload);
+      expect(jwt.verify).toHaveBeenCalledWith(
+        mockToken,
+        'test-secret',
+        expect.any(Function)
+      );
+    });
+    
+    it('should reject an invalid token', async () => {
+      const mockToken = 'invalid.jwt.token';
+      const error = new Error('Invalid token');
+      
+      // Mock jwt.verify to return an error
+      jwt.verify.mockImplementation((token, secret, callback) => {
+        callback(error, null);
+      });
+      
+      await expect(security.verifyToken(mockToken)).rejects.toThrow('Invalid token');
+    });
+  });
+
+  describe('JWT Authentication', () => {
+    let token;
+    
+    beforeAll(async () => {
+      token = await security.generateToken({ userId: '123', role: 'user' });
+    });
+    
+    it('should authenticate with valid token', async () => {
+      const req = createMockRequest({
+        headers: { 'authorization': `Bearer ${token}` }
+      });
+      
+      const res = createMockResponse();
+      const next = jest.fn();
+      
+      // Mock jwt.verify to return a decoded token
+      jwt.verify.mockImplementation((token, secret, callback) => {
+        callback(null, { userId: '123', role: 'user' });
+      });
+      
+      await security.authenticate()(req, res, next);
+      
+      expect(jwt.verify).toHaveBeenCalledWith(
+        token,
+        'test-secret',
+        expect.any(Function)
+      );
+      expect(next).toHaveBeenCalled();
+    });
+  });
+
+  describe('CORS', () => {
+    it('should handle OPTIONS requests', async () => {
+      const req = createMockRequest({
+        method: 'OPTIONS',
+        headers: {
+          origin: 'https://example.com'
+        }
+      });
+      
+      const res = createMockResponse();
+      const next = createNext();
+      
+      // Mock the send method
+      const mockSend = jest.fn();
+      res.send = mockSend;
+      
+      // Call the CORS middleware
+      security.cors()(req, res, next);
+      
+      // For OPTIONS request, it should respond with 204 and call send()
+      expect(res.status).toHaveBeenCalledWith(204);
+      expect(mockSend).toHaveBeenCalled();
+      
+      // next() should not be called for OPTIONS requests
+      expect(next).not.toHaveBeenCalled();
+      
+      // Verify CORS headers
+      expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Allow-Origin', 'https://example.com');
+      expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key');
+      expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Allow-Credentials', 'true');
+      expect(res.setHeader).toHaveBeenCalledWith('Access-Control-Max-Age', '86400');
+    });
+  });
+
+  describe('Rate Limiting', () => {
+    let originalMiddleware;
+    
+    beforeEach(() => {
+      // Store the original middleware method
+      originalMiddleware = security.rateLimiter.middleware;
+      // Mock the middleware to call next() by default
+      security.rateLimiter.middleware = jest.fn((req, res, next) => next());
+    });
+    
+    afterEach(() => {
+      // Restore the original middleware method after each test
+      security.rateLimiter.middleware = originalMiddleware;
+      jest.clearAllMocks();
+    });
+    
+    it('should allow requests under the limit', async () => {
+      const req = createMockRequest();
+      const res = createMockResponse();
+      const next = createNext();
+      
+      // Mock the middleware to call next()
+      security.rateLimiter.middleware = jest.fn((req, res, next) => {
+        // Simulate adding rate limit headers
+        res.set({
+          'RateLimit-Limit': 100,
+          'RateLimit-Remaining': 99,
+          'RateLimit-Reset': Math.floor((Date.now() + 60000) / 1000)
+        });
+        next();
+      });
+      
+      // Make a request
+      await security.rateLimit()(req, res, next);
+      
+      // Should call next() without rate limiting
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(res.status).not.toHaveBeenCalledWith(429);
+      
+      // Verify rate limit headers were set
+      expect(security.rateLimiter.middleware).toHaveBeenCalledWith(
+        req,
+        expect.objectContaining({
+          set: expect.any(Function)
+        }),
+        expect.any(Function)
+      );
+    }, 10000);
+    
+    it('should block requests over the limit', async () => {
+      const req = createMockRequest();
+      const res = createMockResponse();
+      const next = createNext();
+      
+      // Mock the middleware to simulate rate limit exceeded
+      security.rateLimiter.middleware = jest.fn((req, res, next) => {
+        // Simulate rate limit exceeded
+        res.status(429).json({
+          status: 'error',
+          code: 'rate_limit_exceeded',
+          message: 'Too many requests, please try again later',
+          retryAfter: 60
+        });
+      });
+      
+      // Make a request that should be rate limited
+      await security.rateLimit()(req, res, next);
+      
+      // Should respond with 429 and not call next()
+      expect(res.status).toHaveBeenCalledWith(429);
+      expect(res.json).toHaveBeenCalledWith({
+        status: 'error',
+        code: 'rate_limit_exceeded',
+        message: 'Too many requests, please try again later',
+        retryAfter: 60
+      });
+      expect(next).not.toHaveBeenCalled();
+    }, 10000);
+    
+    it('should handle rate limiter errors gracefully', async () => {
+      const req = createMockRequest();
+      const res = createMockResponse();
+      const next = createNext();
+      
+      // Mock the middleware to throw an error
+      security.rateLimiter.middleware = jest.fn(() => {
+        throw new Error('Unexpected error');
+      });
+      
+      // Make a request that causes a rate limiter error
+      await security.rateLimit()(req, res, next);
+      
+      // Should pass the error to next()
+      expect(next).toHaveBeenCalledWith(expect.any(Error));
+      expect(res.status).not.toHaveBeenCalled();
+    }, 10000);
+  });
+
+  describe('API Key Validation', () => {
+    it('should validate API key from header', () => {
+      const req = createMockRequest({
+        headers: { 'x-api-key': 'test-api-key' }
+      });
+      
+      const res = createMockResponse();
+      const next = createNext();
+      
+      security.validateApiKey()(req, res, next);
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(res.status).not.toHaveBeenCalled();
+    });
+
+    it('should reject invalid API key', () => {
+      const req = createMockRequest({
+        headers: { 'x-api-key': 'invalid-key' }
+      });
+      
+      const res = createMockResponse();
+      const next = createNext();
+      
+      security.validateApiKey()(req, res, next);
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'error',
+        code: 'invalid_api_key'
+      }));
+      expect(next).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Token Generation and Verification', () => {
+    it('should generate a valid JWT token', async () => {
+      const payload = { userId: '123', role: 'user' };
+      const mockToken = 'mocked.jwt.token';
+      
+      // Mock jwt.sign to return a fixed token
+      jwt.sign.mockImplementation((payload, secret, options, callback) => {
+        callback(null, mockToken);
+      });
+      
+      const token = await new Promise((resolve, reject) => {
+        security.generateToken(payload, (err, token) => {
+          if (err) reject(err);
+          else resolve(token);
+        });
+      });
+      
+      expect(token).toBe(mockToken);
+      expect(jwt.sign).toHaveBeenCalledWith(
+        payload,
+        'test-secret',
+        { expiresIn: '1h' },
+        expect.any(Function)
+      );
+    });
+    
+    it('should verify a valid token', async () => {
+      const payload = { userId: '123', role: 'user' };
+      const mockToken = 'valid.jwt.token';
+      
+      // Mock jwt.verify to return the payload
+      jwt.verify.mockImplementation((token, secret, callback) => {
+        callback(null, payload);
+      });
+      
+      const decoded = await security.verifyToken(mockToken);
+      expect(decoded).toEqual(payload);
+      expect(jwt.verify).toHaveBeenCalledWith(
+        mockToken,
+        'test-secret',
+        expect.any(Function)
+      );
+    });
+    
+    it('should reject an invalid token', async () => {
+      const mockToken = 'invalid.jwt.token';
+      const error = new Error('Invalid token');
+      
+      // Mock jwt.verify to return an error
+      jwt.verify.mockImplementation((token, secret, callback) => {
+        callback(error, null);
+      });
+      
+      await expect(security.verifyToken(mockToken)).rejects.toThrow('Invalid token');
+    });
+  });
+
+  describe('JWT Authentication', () => {
+    let token;
+    
+    beforeAll(async () => {
+      // Mock jwt.sign to return a token immediately
+      jwt.sign.mockImplementation((payload, secret, options, callback) => {
+        callback(null, 'mocked.jwt.token');
+      });
+      
+      // Generate a test token
+      token = await new Promise((resolve) => {
+        security.generateToken({ userId: '123', role: 'user' }, (err, token) => {
+          resolve(token);
+        });
+      });
+    });
+    
+    it('should authenticate with valid token', async () => {
+      const req = {
+        headers: {
+          authorization: `Bearer ${token}`
+        }
+      };
+      const res = createMockResponse();
+      const next = jest.fn();
+      
+      // Mock jwt.verify to return a valid user
+      jwt.verify.mockImplementation((token, secret, callback) => {
+        callback(null, { userId: '123', role: 'user' });
+      });
+      
+      await security.authenticateJWT(req, res, next);
+      
+      expect(req.user).toBeDefined();
+      expect(req.user.userId).toBe('123');
+      expect(next).toHaveBeenCalled();
+    });
+    
+    it('should reject invalid token', async () => {
+      const req = {
+        headers: {
+          authorization: 'Bearer invalid.token.here'
+        }
+      };
+      const res = createMockResponse();
+      const next = jest.fn();
+      
+      // Mock jwt.verify to return an error
+      jwt.verify.mockImplementation((token, secret, callback) => {
+        callback(new Error('Invalid token'), null);
+      });
+      
+      await security.authenticateJWT(req, res, next);
+      
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        error: 'Invalid or expired token'
+      }));
+      expect(next).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Role-Based Authorization', () => {
+    let req, res, next;
+    
+    beforeEach(() => {
+      req = {};
+      res = createMockResponse();
+      next = jest.fn();
+    });
+    
+    it('should allow access for authorized roles', () => {
+      req.user = { role: 'admin' };
+      
+      const authorize = security.authorize(['admin', 'editor']);
+      authorize(req, res, next);
+      
+      expect(next).toHaveBeenCalled();
+      expect(res.status).not.toHaveBeenCalled();
+    });
+    
+    it('should deny access for unauthorized roles', () => {
+      req.user = { role: 'user' };
+      
+      const authorize = security.authorize(['admin', 'editor']);
+      authorize(req, res, next);
+      
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'error',
+        code: 'forbidden',
+        message: 'Insufficient permissions'
+      }));
+      expect(next).not.toHaveBeenCalled();
+    });
+    
+    it('should handle missing user object', () => {
+      // No user object set on req
+      const authorize = security.authorize(['admin']);
+      authorize(req, res, next);
+      
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'error',
+        code: 'authentication_required',
+        message: 'Authentication required'
+      }));
+    });
+  });
+});

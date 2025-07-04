@@ -1,0 +1,151 @@
+{
+  "app": {
+    "environment": "development",
+    "port": 3000,
+    "host": "localhost",
+    "debug": true
+  },
+  "server": {
+    "cors": {
+      "allowed_origins": [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:8080",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:8080",
+        "http://localhost:5173",
+        "http://localhost:5174"
+      ]
+    },
+    "rate_limiting": {
+      "window_ms": 60000,
+      "max_requests": 1000,
+      "enabled": false
+    },
+    "security": {
+      "jwt_expiry": "7d",
+      "max_login_attempts": 10,
+      "lockout_duration": 300000
+    }
+  },
+  "database": {
+    "postgresql": {
+      "host": "localhost",
+      "port": 5432,
+      "database": "cai_platform_dev",
+      "username": "cai_dev",
+      "password": "dev_password",
+      "pool": {
+        "min": 1,
+        "max": 5
+      },
+      "ssl": false
+    },
+    "redis": {
+      "host": "localhost",
+      "port": 6379,
+      "database": 1
+    },
+    "mongodb": {
+      "uri": "mongodb://localhost:27017/cai_platform_dev"
+    }
+  },
+  "logging": {
+    "level": "debug",
+    "console": {
+      "enabled": true,
+      "colorize": true
+    },
+    "file": {
+      "enabled": true,
+      "filename": "logs/dev.log"
+    }
+  },
+  "monitoring": {
+    "metrics_frequency": 10000,
+    "health_frequency": 30000,
+    "alert_frequency": 5000,
+    "cpu_threshold": 90,
+    "memory_threshold": 90
+  },
+  "brain": {
+    "cognitive_layers": {
+      "perception": {
+        "timeout": 10000
+      },
+      "attention": {
+        "timeout": 5000
+      },
+      "memory": {
+        "short_term_capacity": 50,
+        "long_term_capacity": 1000
+      },
+      "reasoning": {
+        "timeout": 15000,
+        "max_reasoning_depth": 3
+      },
+      "emotion": {
+        "timeout": 3000
+      },
+      "decision": {
+        "timeout": 8000
+      },
+      "action": {
+        "timeout": 20000
+      }
+    },
+    "processing": {
+      "max_concurrent_requests": 5,
+      "request_timeout": 60000
+    }
+  },
+  "agents": {
+    "council": {
+      "max_agents": 5,
+      "collaboration_timeout": 60000
+    }
+  },
+  "rag": {
+    "embedding": {
+      "batch_size": 50,
+      "timeout": 15000
+    },
+    "vector_database": {
+      "similarity_threshold": 0.7,
+      "max_results": 20
+    },
+    "retrieval": {
+      "max_documents": 10,
+      "relevance_threshold": 0.6
+    }
+  },
+  "api": {
+    "documentation": {
+      "enabled": true
+    },
+    "websocket": {
+      "cors": {
+        "origin": [
+          "http://localhost:3000",
+          "http://localhost:3001",
+          "http://localhost:8080",
+          "http://localhost:5173",
+          "http://localhost:5174"
+        ]
+      }
+    }
+  },
+  "external_services": {
+    "openai": {
+      "timeout": 60000,
+      "max_retries": 5
+    }
+  },
+  "features": {
+    "hot_reload": true,
+    "debug_mode": true,
+    "verbose_logging": true,
+    "development_tools": true
+  }
+}
