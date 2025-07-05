@@ -14,6 +14,8 @@ const helmet = require('helmet');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 require('dotenv').config();
+const validateEnv = require('./utils/envValidator');
+validateEnv();
 
 // Core System Imports
 const Logger = require('./utils/logger');
@@ -29,7 +31,7 @@ const Authentication = require('./middleware/authentication');
 
 // System Components
 const CognitiveBrain = require('../brain/cognitiveBrain');
-const AgentCouncil = require('../agents/agentCouncil');
+const AgentCouncil = require('../agents/multiAgentCouncil');
 const RAGSystem = require('../rag/ragSystem');
 
 // API Routes

@@ -1,7 +1,7 @@
 const { Model } = require('objection');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { DB_CONFIG } = require('../../config/database');
+const { DB_CONFIG } = require('../config/database');
 
 // Initialize knex if not already initialized
 const environment = process.env.NODE_ENV || 'development';

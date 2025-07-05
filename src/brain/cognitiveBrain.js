@@ -14,14 +14,14 @@
 const EventEmitter = require('events');
 const Logger = require('../core/utils/logger');
 const PerceptionLayer = require('./perceptionLayer');
-const AttentionLayer = require('./attentionLayer');
+const AttentionLayer = require('./layers/attentionLayer');
 const MemoryLayer = require('./memoryLayer');
 const ReasoningLayer = require('./reasoningLayer');
 const EmotionLayer = require('./emotionLayer');
 const DecisionLayer = require('./decisionLayer');
 const ActionLayer = require('./actionLayer');
-const MemoryManager = require('./memory/memoryManager');
-const PerformanceMonitor = require('./monitoring/performanceMonitor');
+const MemoryManager = require('./memoryManager');
+const PerformanceMonitor = require('./performanceMonitor');
 
 class CognitiveBrain extends EventEmitter {
     constructor(config, databaseManager) {

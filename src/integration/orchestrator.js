@@ -559,22 +559,67 @@ class Orchestrator extends EventEmitter {
      * Execute with consensus from multiple systems
      */
     async executeConsensus(task, targets) {
+        // 1. Run all targets in parallel and gather results
         const results = await this.executeParallel(task, targets);
 
-        // Simple consensus: majority vote or highest confidence
-        const validResults = results.results.filter(r => !r.result.error);
-
-        if (validResults.length === 0) {
+        // 2. Filter out errored results
+        const valid = results.results.filter(r => !r.result.error);
+        if (valid.length === 0) {
             throw new Error('No valid results from any system');
         }
 
-        // For now, return the first valid result
-        // TODO: Implement proper consensus algorithm
+        /*
+         * Consensus strategy v1
+         * ---------------------------------------------------
+         * a) Majority identical answer (case-insensitive string match on finalAnswer/response/text)
+         * b) If no majority, choose answer with highest confidence score
+         * c) Provide agreement ratio for diagnostics
+         */
+
+        // Helper to extract answer text & confidence
+        const extract = (res) => {
+            const out = res.result;
+            const text = (out.finalAnswer || out.answer || out.response || out.text || out).toString();
+            const conf = typeof out.confidence === 'number' ? out.confidence : 0.5;
+            return { text: text.trim(), confidence: conf, raw: out, system: res.system };
+        };
+
+        const processed = valid.map(extract);
+
+        // Count occurrences of normalized answers
+        const counts = new Map();
+        processed.forEach(p => {
+            const key = p.text.toLowerCase();
+            const existing = counts.get(key) || { count: 0, items: [] };
+            existing.count += 1;
+            existing.items.push(p);
+            counts.set(key, existing);
+        });
+
+        // Determine majority if any ( >50% of participants )
+        let consensus = null;
+        let agreement = 0;
+        for (const [key, info] of counts.entries()) {
+            if (info.count > processed.length / 2) {
+                consensus = info.items[0];
+                agreement = info.count / targets.length;
+                break;
+            }
+        }
+
+        // Fallback to highest confidence
+        if (!consensus) {
+            processed.sort((a, b) => b.confidence - a.confidence);
+            consensus = processed[0];
+            agreement = counts.get(consensus.text.toLowerCase()).count / targets.length;
+        }
+
         return {
             type: 'consensus',
-            consensusResult: validResults[0].result,
+            method: 'majority_or_confidence',
+            consensusResult: consensus.raw,
             allResults: results.results,
-            agreement: validResults.length / targets.length
+            agreement
         };
     }
 

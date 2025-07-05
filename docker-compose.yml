@@ -1,0 +1,38 @@
+version: '3.8'
+
+# Define the shared network
+networks:
+  brainiac_network:
+    driver: bridge
+
+# Include other compose files
+services:
+  # Include the Ollama service
+  ollama:
+    extends:
+      file: docker-compose.ollama.yml
+      service: ollama
+    networks:
+      - brainiac_network
+
+  # Add other services here (database, API, etc.)
+  # Example:
+  # api:
+  #   build: .
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - NODE_ENV=development
+  #     - OLLAMA_BASE_URL=http://ollama:11434
+  #   depends_on:
+  #     - ollama
+  #   networks:
+  #     - brainiac_network
+
+# Include monitoring services if needed
+# x-monitoring: &monitoring
+#   extends:
+#     file: monitoring/docker-compose.yml
+#     service: monitoring
+#   networks:
+#     - brainiac_network

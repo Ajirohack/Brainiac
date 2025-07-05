@@ -1,0 +1,32 @@
+# Use the official Ollama image as base
+FROM ollama/ollama:latest
+
+# Set environment variables
+ENV OLLAMA_HOST=0.0.0.0
+ENV OLLAMA_ORIGINS=*
+ENV OLLAMA_KEEP_ALIVE=5m
+ENV OLLAMA_NUM_PARALLEL=2
+ENV OLLAMA_MAX_LOADED_MODELS=2
+
+# Create necessary directories
+RUN mkdir -p /root/.ollama /root/.cache/ollama
+
+# Install additional tools for debugging
+RUN apk add --no-cache curl jq
+
+# Copy the entrypoint script
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+# Set working directory
+WORKDIR /root
+
+# Expose the Ollama API port
+EXPOSE 11434
+
+# Set the entrypoint
+ENTRYPOINT ["/docker-entrypoint.sh"]
+
+# Health check with more generous timeouts
+HEALTHCHECK --interval=60s --timeout=30s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:11434/api/version || exit 1

@@ -1,708 +1,449 @@
 /**
- * Document Processor - Text chunking, preprocessing, and document management
+ * Document Processor - Handles various document formats for RAG system
  * 
- * Handles various document types and formats:
- * - Plain text
- * - Markdown
- * - PDF (via pdf-parse)
- * - Word documents (via mammoth)
- * - Web pages (via cheerio)
- * - Code files
+ * Supports PDF, Word documents, Markdown, and text files with
+ * metadata extraction and error handling for corrupted files.
  */
 
-const EventEmitter = require('events');
 const fs = require('fs').promises;
 const path = require('path');
-const Logger = require('../core/utils/logger');
+const pdfParse = require('pdf-parse');
+const mammoth = require('mammoth');
+const crypto = require('crypto');
+const logger = require('../utils/logger');
 
-class DocumentProcessor extends EventEmitter {
-    constructor(config) {
-        super();
-        this.config = config;
-        this.logger = new Logger('DocumentProcessor');
+class DocumentProcessor {
+  constructor(config = {}) {
+    this.config = {
+      maxFileSize: config.maxFileSize || 50 * 1024 * 1024, // 50MB
+      supportedFormats: config.supportedFormats || ['.pdf', '.docx', '.doc', '.txt', '.md'],
+      chunkSize: config.chunkSize || 1000,
+      overlapSize: config.overlapSize || 200,
+      ...config
+    };
 
-        // Chunking configuration
-        this.chunkSize = config.chunk_size || 1000;
-        this.chunkOverlap = config.chunk_overlap || 200;
-        this.minChunkSize = config.min_chunk_size || 100;
-        this.maxChunkSize = config.max_chunk_size || 2000;
+    this.logger = logger;
+    this.logger.info('📄 Document processor initialized');
+  }
 
-        // Supported file types
-        this.supportedTypes = {
-            text: ['.txt', '.md', '.markdown', '.rst'],
-            code: ['.js', '.py', '.java', '.cpp', '.c', '.h', '.css', '.html', '.xml', '.json', '.yaml', '.yml'],
-            pdf: ['.pdf'],
-            word: ['.docx', '.doc'],
-            web: ['.html', '.htm']
-        };
+  /**
+   * Process a document file
+   * @param {string} filePath - Path to the document file
+   * @param {Object} options - Processing options
+   * @returns {Promise<Object>} Processed document data
+   */
+  async processDocument(filePath, options = {}) {
+    try {
+      this.logger.debug(`📄 Processing document: ${filePath}`);
 
-        // Text processing options
-        this.preserveFormatting = config.preserve_formatting !== false;
-        this.removeExtraWhitespace = config.remove_extra_whitespace !== false;
-        this.normalizeUnicode = config.normalize_unicode !== false;
+      // Validate file
+      await this.validateFile(filePath);
 
-        // Metadata extraction
-        this.extractMetadata = config.extract_metadata !== false;
-        this.includeLineNumbers = config.include_line_numbers || false;
+      // Get file metadata
+      const metadata = await this.extractMetadata(filePath);
 
-        // Performance tracking
-        this.stats = {
-            documentsProcessed: 0,
-            chunksGenerated: 0,
-            totalCharacters: 0,
-            averageChunkSize: 0,
-            processingTime: 0,
-            errors: 0
-        };
+      // Extract text content based on file type
+      const content = await this.extractText(filePath, metadata);
 
-        this.isInitialized = false;
-    }
+      // Process the content
+      const processedContent = await this.processContent(content, options);
 
-    /**
-     * Initialize the document processor
-     */
-    async initialize() {
-        try {
-            this.logger.info('📄 Initializing Document Processor...');
+      // Generate document ID
+      const documentId = this.generateDocumentId(filePath, metadata);
 
-            // Initialize text splitters
-            this.initializeTextSplitters();
-
-            // Test basic functionality
-            await this.testProcessing();
-
-            this.isInitialized = true;
-            this.logger.info('✅ Document Processor initialized successfully');
-
-            this.emit('initialized');
+      return {
+        id: documentId,
+        filePath,
+        content: processedContent,
+        metadata: {
+          ...metadata,
+          processedAt: new Date().toISOString(),
+          processor: 'DocumentProcessor',
+          version: '1.0.0'
+        },
+        chunks: this.createChunks(processedContent),
+        status: 'processed'
+      };
 
         } catch (error) {
-            this.logger.error('❌ Failed to initialize Document Processor:', error);
-            throw error;
+      this.logger.error(`❌ Failed to process document: ${filePath}`, {
+        error: error.message,
+        stack: error.stack
+      });
+
+      return {
+        id: this.generateDocumentId(filePath),
+        filePath,
+        content: '',
+        metadata: {
+          error: error.message,
+          processedAt: new Date().toISOString(),
+          status: 'failed'
+        },
+        chunks: [],
+        status: 'failed'
+      };
         }
     }
 
     /**
-     * Initialize text splitters for different content types
-     */
-    initializeTextSplitters() {
-        this.splitters = {
-            // Recursive character splitter (default)
-            recursive: {
-                separators: ['\n\n', '\n', '. ', ' ', ''],
-                keepSeparator: true
-            },
-
-            // Code-aware splitter
-            code: {
-                separators: ['\nclass ', '\nfunction ', '\ndef ', '\n\n', '\n', ' ', ''],
-                keepSeparator: true
-            },
-
-            // Markdown splitter
-            markdown: {
-                separators: ['\n## ', '\n### ', '\n#### ', '\n\n', '\n', '. ', ' ', ''],
-                keepSeparator: true
-            },
-
-            // Sentence splitter
-            sentence: {
-                separators: ['. ', '! ', '? ', '\n', ' ', ''],
-                keepSeparator: false
-            }
-        };
+   * Validate file before processing
+   * @param {string} filePath - Path to the file
+   * @private
+   */
+  async validateFile(filePath) {
+    // Check if file exists
+    try {
+      await fs.access(filePath);
+    } catch (error) {
+      throw new Error(`File not found: ${filePath}`);
     }
 
-    /**
-     * Test basic processing functionality
-     */
-    async testProcessing() {
-        try {
-            this.logger.debug('🧪 Testing document processing...');
+    // Check file size
+    const stats = await fs.stat(filePath);
+    if (stats.size > this.config.maxFileSize) {
+      throw new Error(`File too large: ${stats.size} bytes (max: ${this.config.maxFileSize} bytes)`);
+    }
 
-            const testText = 'This is a test document. It contains multiple sentences. Each sentence should be processed correctly.';
-            const chunks = await this.chunkText(testText);
-
-            if (chunks.length === 0) {
-                throw new Error('Text chunking test failed');
-            }
-
-            this.logger.debug('✅ Document processing test passed');
-
-        } catch (error) {
-            this.logger.error('❌ Document processing test failed:', error);
-            throw error;
+    // Check file extension
+    const ext = path.extname(filePath).toLowerCase();
+    if (!this.config.supportedFormats.includes(ext)) {
+      throw new Error(`Unsupported file format: ${ext}`);
         }
     }
 
     /**
-     * Process a document from file path
-     */
-    async processFile(filePath, options = {}) {
-        try {
-            const startTime = Date.now();
-            this.logger.debug(`📂 Processing file: ${filePath}`);
-
-            // Check if file exists
+   * Extract metadata from file
+   * @param {string} filePath - Path to the file
+   * @returns {Promise<Object>} File metadata
+   * @private
+   */
+  async extractMetadata(filePath) {
             const stats = await fs.stat(filePath);
-            if (!stats.isFile()) {
-                throw new Error(`Path is not a file: ${filePath}`);
-            }
+    const ext = path.extname(filePath).toLowerCase();
+    const fileName = path.basename(filePath);
 
-            // Determine file type
-            const fileType = this.getFileType(filePath);
+    return {
+      fileName,
+      fileExtension: ext,
+      fileSize: stats.size,
+      createdDate: stats.birthtime,
+      modifiedDate: stats.mtime,
+      mimeType: this.getMimeType(ext),
+      encoding: 'utf-8'
+    };
+  }
 
-            // Extract text content
-            const content = await this.extractContent(filePath, fileType);
+  /**
+   * Extract text content from file
+   * @param {string} filePath - Path to the file
+   * @param {Object} metadata - File metadata
+   * @returns {Promise<string>} Extracted text content
+   * @private
+   */
+  async extractText(filePath, metadata) {
+    const ext = metadata.fileExtension;
 
-            // Process the content
-            const result = await this.processText(content, {
-                ...options,
-                source: filePath,
-                fileType,
-                fileSize: stats.size,
-                lastModified: stats.mtime
-            });
-
-            const processingTime = Date.now() - startTime;
-            this.updateStats(result.chunks.length, content.length, processingTime);
-
-            this.logger.debug(`✅ Processed file ${filePath} (${result.chunks.length} chunks, ${processingTime}ms)`);
-
-            return result;
-
-        } catch (error) {
-            this.stats.errors++;
-            this.logger.error(`❌ Failed to process file ${filePath}:`, error);
-            throw error;
+    try {
+      switch (ext) {
+        case '.pdf':
+          return await this.extractPdfText(filePath);
+        case '.docx':
+        case '.doc':
+          return await this.extractWordText(filePath);
+        case '.txt':
+        case '.md':
+          return await this.extractTextFile(filePath);
+        default:
+          throw new Error(`Unsupported file format: ${ext}`);
+      }
+    } catch (error) {
+      this.logger.error(`❌ Text extraction failed for ${filePath}`, {
+        error: error.message,
+        extension: ext
+      });
+      throw new Error(`Text extraction failed: ${error.message}`);
         }
     }
 
     /**
-     * Process text content directly
-     */
-    async processText(text, options = {}) {
-        try {
-            const startTime = Date.now();
-            this.logger.debug(`📝 Processing text content (${text.length} characters)`);
-
-            // Preprocess text
-            const preprocessedText = this.preprocessText(text, options);
-
-            // Extract metadata
-            const metadata = this.extractDocumentMetadata(preprocessedText, options);
-
-            // Chunk the text
-            const chunks = await this.chunkText(preprocessedText, options);
-
-            // Add metadata to chunks
-            const enrichedChunks = chunks.map((chunk, index) => ({
-                id: this.generateChunkId(options.source, index),
-                text: chunk.text,
-                chunkIndex: index,
-                startChar: chunk.startChar,
-                endChar: chunk.endChar,
-                source: options.source || 'unknown',
-                metadata: {
-                    ...metadata,
-                    chunkSize: chunk.text.length,
-                    ...chunk.metadata,
-                    ...options.metadata
-                }
-            }));
-
-            const processingTime = Date.now() - startTime;
+   * Extract text from PDF file
+   * @param {string} filePath - Path to PDF file
+   * @returns {Promise<string>} Extracted text
+   * @private
+   */
+  async extractPdfText(filePath) {
+    try {
+      const dataBuffer = await fs.readFile(filePath);
+      const data = await pdfParse(dataBuffer);
 
             return {
-                document: {
-                    id: this.generateDocumentId(options.source),
-                    source: options.source || 'unknown',
-                    content: preprocessedText,
-                    metadata,
-                    processedAt: new Date().toISOString(),
-                    processingTime
-                },
-                chunks: enrichedChunks,
-                stats: {
-                    originalLength: text.length,
-                    processedLength: preprocessedText.length,
-                    chunkCount: chunks.length,
-                    averageChunkSize: chunks.reduce((sum, chunk) => sum + chunk.text.length, 0) / chunks.length,
-                    processingTime
-                }
-            };
-
+        text: data.text,
+        pages: data.numpages,
+        info: data.info || {},
+        metadata: {
+          title: data.info?.Title || '',
+          author: data.info?.Author || '',
+          subject: data.info?.Subject || '',
+          keywords: data.info?.Keywords || '',
+          creator: data.info?.Creator || '',
+          producer: data.info?.Producer || '',
+          creationDate: data.info?.CreationDate || '',
+          modDate: data.info?.ModDate || ''
+        }
+      };
         } catch (error) {
-            this.stats.errors++;
-            this.logger.error('❌ Failed to process text:', error);
-            throw error;
+      throw new Error(`PDF processing failed: ${error.message}`);
         }
     }
 
     /**
-     * Extract content from different file types
-     */
-    async extractContent(filePath, fileType) {
-        switch (fileType) {
-            case 'text':
-            case 'code':
-                return await this.extractTextContent(filePath);
-            case 'pdf':
-                return await this.extractPDFContent(filePath);
-            case 'word':
-                return await this.extractWordContent(filePath);
-            case 'web':
-                return await this.extractWebContent(filePath);
-            default:
-                throw new Error(`Unsupported file type: ${fileType}`);
+   * Extract text from Word document
+   * @param {string} filePath - Path to Word file
+   * @returns {Promise<string>} Extracted text
+   * @private
+   */
+  async extractWordText(filePath) {
+    try {
+      const result = await mammoth.extractRawText({ path: filePath });
+      
+      return {
+        text: result.value,
+        messages: result.messages || [],
+        metadata: {
+          hasImages: result.messages?.some(msg => msg.type === 'image') || false,
+          hasTables: result.messages?.some(msg => msg.type === 'table') || false
+        }
+      };
+    } catch (error) {
+      throw new Error(`Word document processing failed: ${error.message}`);
         }
     }
 
     /**
-     * Extract text content from plain text files
-     */
-    async extractTextContent(filePath) {
-        try {
-            const content = await fs.readFile(filePath, 'utf8');
-            return content;
+   * Extract text from plain text file
+   * @param {string} filePath - Path to text file
+   * @returns {Promise<string>} File content
+   * @private
+   */
+  async extractTextFile(filePath) {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      return {
+        text: content,
+        lines: content.split('\n').length,
+        characters: content.length
+      };
         } catch (error) {
-            throw new Error(`Failed to read text file: ${error.message}`);
+      throw new Error(`Text file reading failed: ${error.message}`);
         }
     }
 
     /**
-     * Extract content from PDF files
-     */
-    async extractPDFContent(filePath) {
-        try {
-            // Note: In a real implementation, you would use the pdf-parse package
-            // For now, we'll return a placeholder
-            this.logger.warn('PDF extraction not implemented, returning placeholder');
-            return `[PDF Content from ${path.basename(filePath)}]\n\nThis is a placeholder for PDF content extraction.`;
-        } catch (error) {
-            throw new Error(`Failed to extract PDF content: ${error.message}`);
-        }
+   * Process extracted content
+   * @param {Object} content - Raw content object
+   * @param {Object} options - Processing options
+   * @returns {Promise<string>} Processed text
+   * @private
+   */
+  async processContent(content, options = {}) {
+    let text = content.text || '';
+
+    // Clean and normalize text
+    text = this.cleanText(text);
+
+    // Apply text processing options
+    if (options.removeHeaders) {
+      text = this.removeHeaders(text);
     }
 
-    /**
-     * Extract content from Word documents
-     */
-    async extractWordContent(filePath) {
-        try {
-            // Note: In a real implementation, you would use the mammoth package
-            // For now, we'll return a placeholder
-            this.logger.warn('Word document extraction not implemented, returning placeholder');
-            return `[Word Document Content from ${path.basename(filePath)}]\n\nThis is a placeholder for Word document content extraction.`;
-        } catch (error) {
-            throw new Error(`Failed to extract Word content: ${error.message}`);
-        }
+    if (options.removeFooters) {
+      text = this.removeFooters(text);
     }
 
-    /**
-     * Extract content from web pages
-     */
-    async extractWebContent(filePath) {
-        try {
-            // Note: In a real implementation, you would use the cheerio package
-            // For now, we'll read as text and strip basic HTML
-            const htmlContent = await fs.readFile(filePath, 'utf8');
-
-            // Basic HTML tag removal (very simple)
-            const textContent = htmlContent
-                .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-                .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-                .replace(/<[^>]+>/g, ' ')
-                .replace(/\s+/g, ' ')
-                .trim();
-
-            return textContent;
-        } catch (error) {
-            throw new Error(`Failed to extract web content: ${error.message}`);
-        }
+    if (options.normalizeWhitespace) {
+      text = this.normalizeWhitespace(text);
     }
 
-    /**
-     * Preprocess text content
-     */
-    preprocessText(text, options = {}) {
-        let processed = text;
+    return text;
+  }
 
-        // Normalize unicode
-        if (this.normalizeUnicode) {
-            processed = processed.normalize('NFKC');
-        }
+  /**
+   * Clean and normalize text
+   * @param {string} text - Raw text
+   * @returns {string} Cleaned text
+   * @private
+   */
+  cleanText(text) {
+    return text
+      .replace(/\r\n/g, '\n') // Normalize line endings
+      .replace(/\t/g, ' ') // Replace tabs with spaces
+      .replace(/\s+/g, ' ') // Normalize whitespace
+      .trim();
+  }
 
-        // Remove extra whitespace
-        if (this.removeExtraWhitespace) {
-            processed = processed.replace(/\r\n/g, '\n'); // Normalize line endings
-            processed = processed.replace(/\t/g, ' '); // Replace tabs with spaces
+  /**
+   * Remove headers from text
+   * @param {string} text - Text content
+   * @returns {string} Text without headers
+   * @private
+   */
+  removeHeaders(text) {
+    const lines = text.split('\n');
+    const filteredLines = lines.filter(line => {
+      // Remove lines that look like headers (all caps, short lines)
+      return !(line.length < 50 && line.toUpperCase() === line && line.trim().length > 0);
+    });
+    return filteredLines.join('\n');
+  }
 
-            if (!this.preserveFormatting) {
-                processed = processed.replace(/\n\s*\n\s*\n/g, '\n\n'); // Remove excessive line breaks
-                processed = processed.replace(/ +/g, ' '); // Remove multiple spaces
-            }
-        }
+  /**
+   * Remove footers from text
+   * @param {string} text - Text content
+   * @returns {string} Text without footers
+   * @private
+   */
+  removeFooters(text) {
+    const lines = text.split('\n');
+    const filteredLines = lines.filter(line => {
+      // Remove lines that look like footers (page numbers, etc.)
+      return !(/^\s*\d+\s*$/.test(line.trim())); // Remove lines with just numbers
+    });
+    return filteredLines.join('\n');
+  }
 
-        // Trim
-        processed = processed.trim();
+  /**
+   * Normalize whitespace
+   * @param {string} text - Text content
+   * @returns {string} Text with normalized whitespace
+   * @private
+   */
+  normalizeWhitespace(text) {
+    return text
+      .replace(/\n\s*\n/g, '\n\n') // Remove excessive blank lines
+      .replace(/\s+/g, ' ') // Normalize spaces
+      .trim();
+  }
 
-        return processed;
-    }
-
-    /**
-     * Extract document metadata
-     */
-    extractDocumentMetadata(text, options = {}) {
-        const metadata = {
-            length: text.length,
-            wordCount: this.countWords(text),
-            lineCount: text.split('\n').length,
-            language: this.detectLanguage(text),
-            encoding: 'utf8',
-            ...options.metadata
-        };
-
-        // Add file-specific metadata
-        if (options.source) {
-            metadata.filename = path.basename(options.source);
-            metadata.extension = path.extname(options.source);
-            metadata.directory = path.dirname(options.source);
-        }
-
-        if (options.fileSize) {
-            metadata.fileSize = options.fileSize;
-        }
-
-        if (options.lastModified) {
-            metadata.lastModified = options.lastModified.toISOString();
-        }
-
-        if (options.fileType) {
-            metadata.fileType = options.fileType;
-        }
-
-        return metadata;
-    }
-
-    /**
-     * Chunk text into smaller pieces
-     */
-    async chunkText(text, options = {}) {
-        try {
-            const chunkSize = options.chunkSize || this.chunkSize;
-            const chunkOverlap = options.chunkOverlap || this.chunkOverlap;
-            const splitterType = options.splitterType || this.getSplitterType(options);
-
-            this.logger.debug(`🔪 Chunking text (${text.length} chars, ${chunkSize} chunk size, ${chunkOverlap} overlap)`);
-
-            const splitter = this.splitters[splitterType] || this.splitters.recursive;
-            const chunks = this.recursiveTextSplit(text, splitter, chunkSize, chunkOverlap);
-
-            // Filter out chunks that are too small
-            const filteredChunks = chunks.filter(chunk =>
-                chunk.text.trim().length >= this.minChunkSize
-            );
-
-            this.logger.debug(`✅ Generated ${filteredChunks.length} chunks`);
-
-            return filteredChunks;
-
-        } catch (error) {
-            this.logger.error('❌ Failed to chunk text:', error);
-            throw error;
-        }
-    }
-
-    /**
-     * Recursive text splitting algorithm
-     */
-    recursiveTextSplit(text, splitter, chunkSize, chunkOverlap) {
+  /**
+   * Create chunks from text content
+   * @param {string} text - Text content
+   * @returns {Array} Array of text chunks
+   * @private
+   */
+  createChunks(text) {
         const chunks = [];
-        const separators = splitter.separators;
-
-        // If text is small enough, return as single chunk
-        if (text.length <= chunkSize) {
-            return [{
-                text: text.trim(),
-                startChar: 0,
-                endChar: text.length,
-                metadata: {}
-            }];
-        }
-
-        // Try each separator
-        for (const separator of separators) {
-            if (text.includes(separator)) {
-                const splits = this.splitBySeparator(text, separator, splitter.keepSeparator);
-                return this.mergeSplits(splits, chunkSize, chunkOverlap);
-            }
-        }
-
-        // If no separator works, split by character count
-        return this.splitByCharacterCount(text, chunkSize, chunkOverlap);
-    }
-
-    /**
-     * Split text by separator
-     */
-    splitBySeparator(text, separator, keepSeparator) {
-        const splits = text.split(separator);
-
-        if (keepSeparator && separator !== '') {
-            // Add separator back to splits (except the last one)
-            for (let i = 0; i < splits.length - 1; i++) {
-                splits[i] += separator;
-            }
-        }
-
-        return splits.filter(split => split.trim().length > 0);
-    }
-
-    /**
-     * Merge splits into chunks with overlap
-     */
-    mergeSplits(splits, chunkSize, chunkOverlap) {
-        const chunks = [];
-        let currentChunk = '';
-        let currentStart = 0;
-
-        for (let i = 0; i < splits.length; i++) {
-            const split = splits[i];
-
-            // If adding this split would exceed chunk size
-            if (currentChunk.length + split.length > chunkSize && currentChunk.length > 0) {
-                // Save current chunk
+    const words = text.split(/\s+/);
+    
+    for (let i = 0; i < words.length; i += this.config.chunkSize - this.config.overlapSize) {
+      const chunk = words.slice(i, i + this.config.chunkSize).join(' ');
+      if (chunk.trim()) {
                 chunks.push({
-                    text: currentChunk.trim(),
-                    startChar: currentStart,
-                    endChar: currentStart + currentChunk.length,
-                    metadata: {}
-                });
-
-                // Start new chunk with overlap
-                const overlapText = this.getOverlapText(currentChunk, chunkOverlap);
-                currentChunk = overlapText + split;
-                currentStart = currentStart + currentChunk.length - overlapText.length - split.length;
-            } else {
-                // Add split to current chunk
-                if (currentChunk.length === 0) {
-                    currentStart = this.findTextPosition(splits, i);
-                }
-                currentChunk += split;
-            }
-        }
-
-        // Add final chunk
-        if (currentChunk.trim().length > 0) {
-            chunks.push({
-                text: currentChunk.trim(),
-                startChar: currentStart,
-                endChar: currentStart + currentChunk.length,
-                metadata: {}
-            });
+          id: `chunk_${i}`,
+          content: chunk,
+          startIndex: i,
+          endIndex: Math.min(i + this.config.chunkSize, words.length),
+          wordCount: chunk.split(/\s+/).length
+        });
+      }
         }
 
         return chunks;
     }
 
     /**
-     * Split by character count when no separator works
-     */
-    splitByCharacterCount(text, chunkSize, chunkOverlap) {
-        const chunks = [];
-        let start = 0;
+   * Generate document ID
+   * @param {string} filePath - File path
+   * @param {Object} metadata - File metadata
+   * @returns {string} Document ID
+   * @private
+   */
+  generateDocumentId(filePath, metadata = {}) {
+    const fileName = path.basename(filePath);
+    const fileSize = metadata.fileSize || 0;
+    const modifiedDate = metadata.modifiedDate || new Date();
+    
+    const hashInput = `${fileName}_${fileSize}_${modifiedDate.getTime()}`;
+    return crypto.createHash('md5').update(hashInput).digest('hex');
+  }
 
-        while (start < text.length) {
-            let end = Math.min(start + chunkSize, text.length);
+  /**
+   * Get MIME type for file extension
+   * @param {string} extension - File extension
+   * @returns {string} MIME type
+   * @private
+   */
+  getMimeType(extension) {
+    const mimeTypes = {
+      '.pdf': 'application/pdf',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.doc': 'application/msword',
+      '.txt': 'text/plain',
+      '.md': 'text/markdown'
+    };
 
-            // Try to break at word boundary
-            if (end < text.length) {
-                const lastSpace = text.lastIndexOf(' ', end);
-                if (lastSpace > start + chunkSize * 0.8) {
-                    end = lastSpace;
-                }
-            }
+    return mimeTypes[extension] || 'application/octet-stream';
+  }
 
-            const chunkText = text.substring(start, end).trim();
-            if (chunkText.length > 0) {
-                chunks.push({
-                    text: chunkText,
-                    startChar: start,
-                    endChar: end,
-                    metadata: {}
-                });
-            }
+  /**
+   * Process multiple documents
+   * @param {Array} filePaths - Array of file paths
+   * @param {Object} options - Processing options
+   * @returns {Promise<Array>} Array of processed documents
+   */
+  async processDocuments(filePaths, options = {}) {
+    this.logger.info(`📄 Processing ${filePaths.length} documents`);
 
-            start = Math.max(start + chunkSize - chunkOverlap, end);
+    const results = [];
+    const errors = [];
+
+    for (const filePath of filePaths) {
+      try {
+        const result = await this.processDocument(filePath, options);
+        results.push(result);
+        
+        if (result.status === 'failed') {
+          errors.push({
+            filePath,
+            error: result.metadata.error
+          });
         }
-
-        return chunks;
+      } catch (error) {
+        this.logger.error(`❌ Failed to process ${filePath}`, {
+          error: error.message
+        });
+        errors.push({
+          filePath,
+          error: error.message
+        });
+      }
     }
 
-    /**
-     * Get overlap text from the end of a chunk
-     */
-    getOverlapText(text, overlapSize) {
-        if (overlapSize <= 0 || text.length <= overlapSize) {
-            return '';
-        }
+    this.logger.info(`✅ Processed ${results.length} documents, ${errors.length} errors`);
 
-        const overlapText = text.substring(text.length - overlapSize);
+    return {
+      documents: results,
+      errors,
+      summary: {
+        total: filePaths.length,
+        successful: results.filter(r => r.status === 'processed').length,
+        failed: errors.length
+      }
+    };
+  }
 
-        // Try to start at word boundary
-        const firstSpace = overlapText.indexOf(' ');
-        if (firstSpace > 0 && firstSpace < overlapSize * 0.5) {
-            return overlapText.substring(firstSpace + 1);
-        }
-
-        return overlapText;
-    }
-
-    /**
-     * Find text position in original text
-     */
-    findTextPosition(splits, index) {
-        let position = 0;
-        for (let i = 0; i < index; i++) {
-            position += splits[i].length;
-        }
-        return position;
-    }
-
-    /**
-     * Determine appropriate splitter type
-     */
-    getSplitterType(options) {
-        if (options.splitterType) {
-            return options.splitterType;
-        }
-
-        if (options.fileType === 'code') {
-            return 'code';
-        }
-
-        if (options.source && options.source.endsWith('.md')) {
-            return 'markdown';
-        }
-
-        return 'recursive';
-    }
-
-    /**
-     * Get file type from extension
-     */
-    getFileType(filePath) {
-        const ext = path.extname(filePath).toLowerCase();
-
-        for (const [type, extensions] of Object.entries(this.supportedTypes)) {
-            if (extensions.includes(ext)) {
-                return type;
-            }
-        }
-
-        return 'text'; // Default to text
-    }
-
-    /**
-     * Count words in text
-     */
-    countWords(text) {
-        return text.trim().split(/\s+/).filter(word => word.length > 0).length;
-    }
-
-    /**
-     * Simple language detection
-     */
-    detectLanguage(text) {
-        // Very basic language detection
-        // In a real implementation, you might use a library like franc
-        const sample = text.substring(0, 1000).toLowerCase();
-
-        // Check for common English words
-        const englishWords = ['the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'];
-        const englishCount = englishWords.reduce((count, word) =>
-            count + (sample.split(word).length - 1), 0
-        );
-
-        if (englishCount > 5) {
-            return 'en';
-        }
-
-        return 'unknown';
-    }
-
-    /**
-     * Generate document ID
-     */
-    generateDocumentId(source) {
-        if (source) {
-            // Use source path as basis for ID
-            const hash = this.simpleHash(source);
-            return `doc_${hash}`;
-        }
-        return `doc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    }
-
-    /**
-     * Generate chunk ID
-     */
-    generateChunkId(source, index) {
-        const docId = this.generateDocumentId(source);
-        return `${docId}_chunk_${index}`;
-    }
-
-    /**
-     * Simple hash function
-     */
-    simpleHash(str) {
-        let hash = 0;
-        for (let i = 0; i < str.length; i++) {
-            const char = str.charCodeAt(i);
-            hash = ((hash << 5) - hash) + char;
-            hash = hash & hash; // Convert to 32-bit integer
-        }
-        return Math.abs(hash).toString(36);
-    }
-
-    /**
-     * Update performance statistics
-     */
-    updateStats(chunkCount, characterCount, processingTime) {
-        this.stats.documentsProcessed++;
-        this.stats.chunksGenerated += chunkCount;
-        this.stats.totalCharacters += characterCount;
-        this.stats.processingTime += processingTime;
-
-        // Update average chunk size
-        this.stats.averageChunkSize = this.stats.totalCharacters / this.stats.chunksGenerated;
-    }
-
-    /**
-     * Get performance statistics
+  /**
+   * Get processing statistics
+   * @returns {Object} Processing statistics
      */
     getStats() {
         return {
-            ...this.stats,
-            averageProcessingTime: this.stats.processingTime / this.stats.documentsProcessed || 0,
-            isInitialized: this.isInitialized
-        };
-    }
-
-    /**
-     * Shutdown the document processor
-     */
-    async shutdown() {
-        try {
-            this.logger.info('🔄 Shutting down Document Processor...');
-
-            this.isInitialized = false;
-            this.logger.info('✅ Document Processor shutdown completed');
-
-        } catch (error) {
-            this.logger.error('❌ Error during Document Processor shutdown:', error);
-            throw error;
-        }
-    }
+      supportedFormats: this.config.supportedFormats,
+      maxFileSize: this.config.maxFileSize,
+      chunkSize: this.config.chunkSize,
+      overlapSize: this.config.overlapSize
+    };
+  }
 }
 
 module.exports = DocumentProcessor;

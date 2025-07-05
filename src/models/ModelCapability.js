@@ -1,5 +1,5 @@
 const { Model } = require('objection');
-const { DB_CONFIG } = require('../../config/database');
+const { DB_CONFIG } = require('../config/database');
 
 // Initialize knex if not already initialized
 const environment = process.env.NODE_ENV || 'development';

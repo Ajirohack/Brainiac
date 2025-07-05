@@ -491,9 +491,6 @@ async function cleanupTempFiles(files) {
       });
     }
   }
-}  
-    throw error;
-  }
 }
 
 /**
@@ -695,6 +692,11 @@ router.get(
     }
   }
 );
+
+/**
+ * @swagger
+ * /api/rag/files:
+ *   get:
  *     summary: List all knowledge base files
  *     tags: [RAG]
  *     security:
@@ -1002,91 +1004,6 @@ router.post(
         query: req.body?.query?.substring(0, 100) // Log first 100 chars
       });
       
-      next(error);
-    }
-  }
-);
- *     summary: Query the knowledge base
- *     tags: [RAG]
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - query
- *             properties:
- *               query:
- *                 type: string
- *                 description: The query to search for in the knowledge base
- *               k:
- *                 type: integer
- *                 description: Number of results to return (default: 4)
- *                 default: 4
- *     responses:
- *       200:
- *         description: Search results from the knowledge base
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 results:
- *                   type: array
- *                   items:
- *                     type: object
- *                     properties:
- *                       content:
- *                         type: string
- *                       metadata:
- *                         type: object
- *                         properties:
- *                           source:
- *                             type: string
- *                           page:
- *                             type: number
- *                             format: int32
- *                           chunk:
- *                             type: number
- *                             format: int32
- *                       score:
- *                         type: number
- *                         format: float
- *       400:
- *         description: Invalid request
- *       401:
- *         description: Unauthorized
- *       500:
- *         description: Internal server error
- */
-router.post(
-  '/query',
-  authenticateToken,
-  [
-    body('query').isString().trim().notEmpty().withMessage('Query is required'),
-    body('k').optional().isInt({ min: 1, max: 20 }).withMessage('k must be between 1 and 20')
-  ],
-  validateRequest,
-  async (req, res, next) => {
-    try {
-      const { query, k = 4 } = req.body;
-      const vectorStore = getVectorStore();
-      
-      // Perform similarity search
-      const results = await vectorStore.similaritySearch(query, k);
-      
-      // Format results
-      const formattedResults = results.map(doc => ({
-        content: doc.pageContent,
-        metadata: doc.metadata,
-        score: doc.score
-      }));
-      
-      res.json({ results: formattedResults });
-    } catch (error) {
       next(error);
     }
   }

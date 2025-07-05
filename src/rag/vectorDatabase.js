@@ -12,6 +12,7 @@ const EventEmitter = require('events');
 const fs = require('fs').promises;
 const path = require('path');
 const Logger = require('../core/utils/logger');
+const { ChromaClient } = require('chromadb');
 
 class VectorDatabase extends EventEmitter {
     constructor(config, databaseManager) {
@@ -173,11 +174,9 @@ class VectorDatabase extends EventEmitter {
 
             // Note: In a real implementation, you would use the chromadb package
             // Mock implementation for now
-            this.client = {
-                host: this.config.host || 'localhost',
-                port: this.config.port || 8000,
-                collections: new Map()
-            };
+            this.client = new ChromaClient({
+                path: `http://${this.config.host || 'localhost'}:${this.config.port || 8000}`
+            });
 
             this.logger.info('✅ Chroma backend initialized');
 

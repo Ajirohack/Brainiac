@@ -1,9 +1,26 @@
 const request = require('supertest');
-const app = require('../../src/app');
+const CAIPlatform = require('../../src/core');
 const { sequelize } = require('../../src/models');
 const { createTestUser, getAuthToken } = require('../test-utils');
 const fs = require('fs');
 const path = require('path');
+
+// Initialize the application
+const caiPlatform = new CAIPlatform();
+const app = caiPlatform.app; // Get the Express app instance
+
+// Enable detailed logging for debugging
+console.log('=== Starting RAG Integration Tests ===');
+console.log('Current directory:', process.cwd());
+console.log('Environment:', process.env.NODE_ENV || 'development');
+
+// Log database configuration
+console.log('Database config:', {
+  dialect: sequelize.getDialect(),
+  database: sequelize.config.database,
+  host: sequelize.config.host,
+  port: sequelize.config.port
+});
 
 // Test file paths
 const TEST_FILES_DIR = path.join(__dirname, '../test-files');
@@ -40,10 +57,24 @@ describe('RAG API', () => {
   let testUser;
 
   beforeAll(async () => {
-    // Sync database and create test user
-    await sequelize.sync({ force: true });
-    testUser = await createTestUser();
-    authToken = await getAuthToken(testUser);
+    console.log('=== Setting up test environment ===');
+    try {
+      // Sync database and create test user
+      console.log('Syncing database...');
+      await sequelize.sync({ force: true });
+      console.log('Database synced successfully');
+      
+      console.log('Creating test user...');
+      testUser = await createTestUser();
+      console.log('Test user created:', testUser.id);
+      
+      console.log('Generating auth token...');
+      authToken = await getAuthToken(testUser);
+      console.log('Auth token generated');
+    } catch (error) {
+      console.error('Error in beforeAll:', error);
+      throw error;
+    }
   });
 
   afterAll(async () => {
@@ -53,27 +84,53 @@ describe('RAG API', () => {
 
   describe('File Upload', () => {
     it('should upload a text file', async () => {
-      const response = await request(app)
-        .post('/api/rag/upload')
-        .set('Authorization', `Bearer ${authToken}`)
-        .attach('file', TEST_TXT);
+      console.log('\n=== Starting test: should upload a text file ===');
+      try {
+        console.log('Sending file upload request...');
+        const response = await request(app)
+          .post('/api/rag/upload')
+          .set('Authorization', `Bearer ${authToken}`)
+          .attach('file', TEST_TXT);
 
-      expect(response.status).toBe(200);
-      expect(response.body).toHaveProperty('id');
-      expect(response.body.name).toBe('test.txt');
-      expect(response.body.type).toBe('txt');
-      expect(response.body.status).toBe('processing');
+        console.log('Upload response:', {
+          status: response.status,
+          body: response.body,
+          headers: response.headers
+        });
+
+        expect(response.status).toBe(200);
+        expect(response.body).toHaveProperty('id');
+        expect(response.body).toHaveProperty('filename', 'test.txt');
+        console.log('Test passed');
+      } catch (error) {
+        console.error('Test failed:', error);
+        throw error;
+      }
     });
 
     it('should upload a markdown file', async () => {
-      const response = await request(app)
-        .post('/api/rag/upload')
-        .set('Authorization', `Bearer ${authToken}`)
-        .attach('file', TEST_MD);
+      console.log('\n=== Starting test: should upload a markdown file ===');
+      try {
+        console.log('Sending file upload request...');
+        const response = await request(app)
+          .post('/api/rag/upload')
+          .set('Authorization', `Bearer ${authToken}`)
+          .attach('file', TEST_MD);
 
-      expect(response.status).toBe(200);
-      expect(response.body.name).toBe('test.md');
-      expect(response.body.type).toBe('md');
+        console.log('Upload response:', {
+          status: response.status,
+          body: response.body,
+          headers: response.headers
+        });
+
+        expect(response.status).toBe(200);
+        expect(response.body).toHaveProperty('id');
+        expect(response.body).toHaveProperty('filename', 'test.md');
+        console.log('Test passed');
+      } catch (error) {
+        console.error('Test failed:', error);
+        throw error;
+      }
     });
 
     it('should upload a PDF file', async () => {

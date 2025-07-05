@@ -1,558 +1,496 @@
 /**
- * Authentication Middleware
+ * Authentication Middleware - JWT-based authentication and authorization
  * 
- * Handles user authentication and authorization for the CAI Platform
- * Supports JWT tokens, API keys, and session-based authentication
+ * Provides JWT token validation, user management, role-based access control,
+ * and session management with proper security measures.
  */
 
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const Logger = require('../utils/logger');
+const crypto = require('crypto');
+const logger = require('../../utils/logger');
 
-class Authentication {
+class AuthenticationMiddleware {
     constructor(config = {}) {
         this.config = {
-            jwtSecret: process.env.JWT_SECRET || 'your-secret-key',
-            jwtExpiresIn: process.env.JWT_EXPIRES_IN || '24h',
-            bcryptRounds: parseInt(process.env.BCRYPT_ROUNDS) || 12,
-            enableApiKeys: true,
-            enableSessions: false,
-            requireAuth: true,
+      jwtSecret: config.jwtSecret || process.env.JWT_SECRET || 'your-secret-key',
+      jwtExpiresIn: config.jwtExpiresIn || '24h',
+      refreshTokenExpiresIn: config.refreshTokenExpiresIn || '7d',
+      saltRounds: config.saltRounds || 12,
+      maxLoginAttempts: config.maxLoginAttempts || 5,
+      lockoutDuration: config.lockoutDuration || 15 * 60 * 1000, // 15 minutes
             ...config
         };
 
-        this.logger = new Logger('Authentication');
-        
-        // API key storage (in production, use database)
-        this.apiKeys = new Map();
-        
-        // Session storage (in production, use Redis)
-        this.sessions = new Map();
-        
-        // User storage (in production, use database)
-        this.users = new Map();
-        
-        // Authentication statistics
-        this.stats = {
-            totalAttempts: 0,
-            successfulLogins: 0,
-            failedLogins: 0,
-            activeTokens: 0,
-            activeSessions: 0
-        };
+    this.logger = logger;
+    this.loginAttempts = new Map(); // Track login attempts per IP
+    this.refreshTokens = new Map(); // Store refresh tokens
+    this.userSessions = new Map(); // Track user sessions
 
-        // Initialize default admin user if none exists
-        this.initializeDefaultUser();
-    }
+    this.logger.info('🔐 Authentication middleware initialized');
+  }
 
-    /**
-     * Initialize default admin user
-     */
-    async initializeDefaultUser() {
-        if (this.users.size === 0) {
-            const defaultPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'admin123';
-            const hashedPassword = await this.hashPassword(defaultPassword);
-            
-            this.users.set('admin', {
-                id: 'admin',
-                username: 'admin',
-                email: 'admin@cai-platform.com',
-                password: hashedPassword,
-                role: 'admin',
-                permissions: ['*'],
-                createdAt: new Date(),
-                lastLogin: null,
-                isActive: true
+  /**
+   * Middleware to authenticate JWT tokens
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   * @param {Function} next - Express next function
+   */
+  authenticateToken(req, res, next) {
+    try {
+      const authHeader = req.headers['authorization'];
+      const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+
+      if (!token) {
+        return res.status(401).json({
+          error: 'Access token required',
+          code: 'MISSING_TOKEN'
+        });
+      }
+
+      jwt.verify(token, this.config.jwtSecret, (err, decoded) => {
+        if (err) {
+          this.logger.warn('❌ Invalid JWT token', {
+            error: err.message,
+            ip: req.ip
+          });
+
+          if (err.name === 'TokenExpiredError') {
+            return res.status(401).json({
+              error: 'Token expired',
+              code: 'TOKEN_EXPIRED'
             });
-            
-            this.logger.info('Default admin user created');
-        }
-    }
+          }
 
-    /**
-     * Authentication middleware
-     */
-    middleware(options = {}) {
-        const config = { ...this.config, ...options };
-        
-        return async (req, res, next) => {
-            try {
-                // Skip authentication if not required
-                if (!config.requireAuth) {
-                    return next();
-                }
-                
-                // Try different authentication methods
-                const authResult = await this.authenticate(req, config);
-                
-                if (authResult.success) {
-                    req.user = authResult.user;
-                    req.authMethod = authResult.method;
-                    this.stats.successfulLogins++;
-                    next();
-                } else {
-                    this.stats.failedLogins++;
-                    this.handleAuthFailure(res, authResult.error);
-                }
-                
-            } catch (error) {
-                this.logger.error('Authentication error:', error);
-                this.stats.failedLogins++;
-                this.handleAuthFailure(res, 'Authentication failed');
-            }
-        };
-    }
+          return res.status(403).json({
+            error: 'Invalid token',
+            code: 'INVALID_TOKEN'
+          });
+        }
 
-    /**
-     * Authenticate request using multiple methods
-     */
-    async authenticate(req, config) {
-        this.stats.totalAttempts++;
-        
-        // Try JWT token authentication
-        const jwtResult = await this.authenticateJWT(req);
-        if (jwtResult.success) {
-            return jwtResult;
+        // Check if user session is still valid
+        if (!this.isSessionValid(decoded.userId, decoded.sessionId)) {
+          return res.status(401).json({
+            error: 'Session expired',
+            code: 'SESSION_EXPIRED'
+          });
         }
-        
-        // Try API key authentication
-        if (config.enableApiKeys) {
-            const apiKeyResult = await this.authenticateApiKey(req);
-            if (apiKeyResult.success) {
-                return apiKeyResult;
-            }
-        }
-        
-        // Try session authentication
-        if (config.enableSessions) {
-            const sessionResult = await this.authenticateSession(req);
-            if (sessionResult.success) {
-                return sessionResult;
-            }
-        }
-        
-        return {
-            success: false,
-            error: 'No valid authentication found'
-        };
-    }
 
-    /**
-     * Authenticate using JWT token
-     */
-    async authenticateJWT(req) {
-        try {
-            const token = this.extractToken(req);
-            if (!token) {
-                return { success: false, error: 'No token provided' };
-            }
-            
-            const decoded = jwt.verify(token, this.config.jwtSecret);
-            const user = this.users.get(decoded.username || decoded.id);
-            
-            if (!user || !user.isActive) {
-                return { success: false, error: 'User not found or inactive' };
-            }
-            
-            return {
-                success: true,
-                user: this.sanitizeUser(user),
-                method: 'jwt',
-                token
-            };
+        req.user = decoded;
+        req.userId = decoded.userId;
+        req.sessionId = decoded.sessionId;
+
+        this.logger.debug('✅ Token authenticated', {
+          userId: decoded.userId,
+          ip: req.ip
+        });
+
+        next();
+      });
             
         } catch (error) {
-            if (error.name === 'TokenExpiredError') {
-                return { success: false, error: 'Token expired' };
-            } else if (error.name === 'JsonWebTokenError') {
-                return { success: false, error: 'Invalid token' };
-            }
-            return { success: false, error: 'Token verification failed' };
+      this.logger.error('❌ Authentication error', {
+        error: error.message,
+        ip: req.ip
+      });
+
+      return res.status(500).json({
+        error: 'Authentication failed',
+        code: 'AUTH_ERROR'
+      });
         }
     }
 
     /**
-     * Authenticate using API key
-     */
-    async authenticateApiKey(req) {
-        const apiKey = req.headers['x-api-key'] || req.query.apiKey;
-        if (!apiKey) {
-            return { success: false, error: 'No API key provided' };
-        }
-        
-        const keyData = this.apiKeys.get(apiKey);
-        if (!keyData || !keyData.isActive) {
-            return { success: false, error: 'Invalid or inactive API key' };
-        }
-        
-        // Check expiration
-        if (keyData.expiresAt && keyData.expiresAt < new Date()) {
-            return { success: false, error: 'API key expired' };
-        }
-        
-        // Update usage
-        keyData.lastUsed = new Date();
-        keyData.usageCount = (keyData.usageCount || 0) + 1;
-        
-        return {
-            success: true,
-            user: {
-                id: keyData.userId,
-                username: keyData.name,
-                role: keyData.role || 'api',
-                permissions: keyData.permissions || []
-            },
-            method: 'apikey',
-            apiKey
+   * Middleware to require specific roles
+   * @param {Array} requiredRoles - Array of required roles
+   * @returns {Function} Express middleware function
+   */
+  requireRoles(requiredRoles) {
+    return (req, res, next) => {
+      if (!req.user) {
+        return res.status(401).json({
+          error: 'Authentication required',
+          code: 'AUTH_REQUIRED'
+        });
+      }
+
+      const userRoles = req.user.roles || [];
+      const hasRequiredRole = requiredRoles.some(role => userRoles.includes(role));
+
+      if (!hasRequiredRole) {
+        this.logger.warn('❌ Insufficient permissions', {
+          userId: req.user.userId,
+          userRoles,
+          requiredRoles,
+          ip: req.ip
+        });
+
+        return res.status(403).json({
+          error: 'Insufficient permissions',
+          code: 'INSUFFICIENT_PERMISSIONS'
+        });
+      }
+
+      this.logger.debug('✅ Role check passed', {
+        userId: req.user.userId,
+        roles: userRoles,
+        requiredRoles
+      });
+
+      next();
         };
     }
 
     /**
-     * Authenticate using session
-     */
-    async authenticateSession(req) {
-        const sessionId = req.sessionID || req.headers['x-session-id'];
-        if (!sessionId) {
-            return { success: false, error: 'No session ID provided' };
-        }
-        
-        const session = this.sessions.get(sessionId);
-        if (!session || session.expiresAt < new Date()) {
-            return { success: false, error: 'Invalid or expired session' };
-        }
-        
-        const user = this.users.get(session.userId);
-        if (!user || !user.isActive) {
-            return { success: false, error: 'User not found or inactive' };
-        }
-        
-        // Update session
-        session.lastAccessed = new Date();
-        
-        return {
-            success: true,
-            user: this.sanitizeUser(user),
-            method: 'session',
-            sessionId
-        };
-    }
+   * Middleware to require specific permissions
+   * @param {Array} requiredPermissions - Array of required permissions
+   * @returns {Function} Express middleware function
+   */
+  requirePermissions(requiredPermissions) {
+    return (req, res, next) => {
+      if (!req.user) {
+        return res.status(401).json({
+          error: 'Authentication required',
+          code: 'AUTH_REQUIRED'
+        });
+      }
 
-    /**
-     * Extract token from request
-     */
-    extractToken(req) {
-        const authHeader = req.headers.authorization;
-        if (authHeader && authHeader.startsWith('Bearer ')) {
-            return authHeader.substring(7);
-        }
-        
-        return req.query.token || req.headers['x-access-token'];
-    }
+      const userPermissions = req.user.permissions || [];
+      const hasRequiredPermission = requiredPermissions.every(permission => 
+        userPermissions.includes(permission)
+      );
 
-    /**
-     * Login user and generate token
-     */
-    async login(username, password, options = {}) {
-        try {
-            const user = this.users.get(username);
-            if (!user || !user.isActive) {
-                throw new Error('User not found or inactive');
-            }
-            
-            const isValidPassword = await this.verifyPassword(password, user.password);
-            if (!isValidPassword) {
-                throw new Error('Invalid password');
-            }
-            
-            // Update last login
-            user.lastLogin = new Date();
-            
-            // Generate JWT token
-            const token = this.generateToken(user, options);
-            
-            this.stats.successfulLogins++;
-            this.stats.activeTokens++;
-            
-            this.logger.info(`User ${username} logged in successfully`);
-            
-            return {
-                success: true,
-                token,
-                user: this.sanitizeUser(user),
-                expiresIn: this.config.jwtExpiresIn
-            };
-            
-        } catch (error) {
-            this.stats.failedLogins++;
-            this.logger.warn(`Login failed for user ${username}: ${error.message}`);
-            throw error;
-        }
-    }
+      if (!hasRequiredPermission) {
+        this.logger.warn('❌ Insufficient permissions', {
+          userId: req.user.userId,
+          userPermissions,
+          requiredPermissions,
+          ip: req.ip
+        });
+
+        return res.status(403).json({
+          error: 'Insufficient permissions',
+          code: 'INSUFFICIENT_PERMISSIONS'
+        });
+      }
+
+      this.logger.debug('✅ Permission check passed', {
+        userId: req.user.userId,
+        permissions: userPermissions,
+        requiredPermissions
+      });
+
+      next();
+    };
+  }
 
     /**
      * Generate JWT token
+   * @param {Object} user - User object
+   * @returns {Object} Token data
      */
-    generateToken(user, options = {}) {
+  generateToken(user) {
+    const sessionId = crypto.randomUUID();
         const payload = {
-            id: user.id,
-            username: user.username,
-            role: user.role,
-            permissions: user.permissions
-        };
-        
-        const tokenOptions = {
-            expiresIn: options.expiresIn || this.config.jwtExpiresIn,
-            issuer: 'cai-platform',
-            audience: 'cai-users'
-        };
-        
-        return jwt.sign(payload, this.config.jwtSecret, tokenOptions);
-    }
+      userId: user.id,
+      email: user.email,
+      roles: user.roles || [],
+      permissions: user.permissions || [],
+      sessionId: sessionId,
+      iat: Math.floor(Date.now() / 1000)
+    };
 
-    /**
-     * Create API key
-     */
-    createApiKey(userId, name, options = {}) {
-        const apiKey = this.generateApiKey();
-        
-        const keyData = {
-            key: apiKey,
-            userId,
-            name,
-            role: options.role || 'api',
-            permissions: options.permissions || [],
+    const token = jwt.sign(payload, this.config.jwtSecret, {
+      expiresIn: this.config.jwtExpiresIn
+    });
+
+    const refreshToken = jwt.sign(
+      { userId: user.id, sessionId: sessionId },
+      this.config.jwtSecret,
+      { expiresIn: this.config.refreshTokenExpiresIn }
+    );
+
+    // Store session information
+    this.userSessions.set(sessionId, {
+      userId: user.id,
             createdAt: new Date(),
-            expiresAt: options.expiresAt || null,
-            isActive: true,
-            usageCount: 0,
-            lastUsed: null
-        };
-        
-        this.apiKeys.set(apiKey, keyData);
-        
-        this.logger.info(`API key created for user ${userId}: ${name}`);
+      lastActivity: new Date(),
+      ip: user.ip || 'unknown'
+    });
+
+    // Store refresh token
+    this.refreshTokens.set(refreshToken, {
+      userId: user.id,
+      sessionId: sessionId,
+      createdAt: new Date()
+    });
+
+    this.logger.info('🎫 Generated new token', {
+      userId: user.id,
+      sessionId: sessionId
+    });
         
         return {
-            apiKey,
-            name,
-            createdAt: keyData.createdAt,
-            expiresAt: keyData.expiresAt
+      accessToken: token,
+      refreshToken: refreshToken,
+      expiresIn: this.config.jwtExpiresIn,
+      tokenType: 'Bearer'
         };
     }
 
     /**
-     * Generate random API key
-     */
-    generateApiKey() {
-        const prefix = 'cai';
-        const randomPart = require('crypto').randomBytes(32).toString('hex');
-        return `${prefix}_${randomPart}`;
-    }
+   * Refresh access token
+   * @param {string} refreshToken - Refresh token
+   * @returns {Object} New token data
+   */
+  refreshToken(refreshToken) {
+    try {
+      const decoded = jwt.verify(refreshToken, this.config.jwtSecret);
+      
+      // Check if refresh token exists in storage
+      const storedToken = this.refreshTokens.get(refreshToken);
+      if (!storedToken || storedToken.userId !== decoded.userId) {
+        throw new Error('Invalid refresh token');
+      }
 
-    /**
-     * Create user session
-     */
-    createSession(userId, options = {}) {
-        const sessionId = this.generateSessionId();
-        const expiresAt = new Date(Date.now() + (options.maxAge || 24 * 60 * 60 * 1000)); // 24 hours
-        
-        const session = {
-            id: sessionId,
-            userId,
-            createdAt: new Date(),
-            expiresAt,
-            lastAccessed: new Date(),
-            data: options.data || {}
-        };
-        
-        this.sessions.set(sessionId, session);
-        this.stats.activeSessions++;
-        
-        return sessionId;
-    }
+      // Get user data (in real implementation, fetch from database)
+      const user = this.getUserById(decoded.userId);
+      if (!user) {
+        throw new Error('User not found');
+      }
 
-    /**
-     * Generate session ID
-     */
-    generateSessionId() {
-        return require('crypto').randomBytes(32).toString('hex');
+      // Generate new tokens
+      const newTokens = this.generateToken(user);
+
+      // Remove old refresh token
+      this.refreshTokens.delete(refreshToken);
+
+      this.logger.info('🔄 Token refreshed', {
+        userId: decoded.userId,
+        sessionId: decoded.sessionId
+      });
+
+      return newTokens;
+
+    } catch (error) {
+      this.logger.error('❌ Token refresh failed', {
+        error: error.message
+      });
+      throw new Error('Token refresh failed');
+    }
     }
 
     /**
      * Hash password
+   * @param {string} password - Plain text password
+   * @returns {Promise<string>} Hashed password
      */
     async hashPassword(password) {
-        return bcrypt.hash(password, this.config.bcryptRounds);
+    try {
+      const salt = await bcrypt.genSalt(this.config.saltRounds);
+      const hash = await bcrypt.hash(password, salt);
+      return hash;
+    } catch (error) {
+      this.logger.error('❌ Password hashing failed', {
+        error: error.message
+      });
+      throw new Error('Password hashing failed');
+    }
+  }
+
+  /**
+   * Compare password with hash
+   * @param {string} password - Plain text password
+   * @param {string} hash - Hashed password
+   * @returns {Promise<boolean>} Password match
+   */
+  async comparePassword(password, hash) {
+    try {
+      return await bcrypt.compare(password, hash);
+    } catch (error) {
+      this.logger.error('❌ Password comparison failed', {
+        error: error.message
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Check if IP is locked out
+   * @param {string} ip - IP address
+   * @returns {boolean} Lockout status
+   * @private
+   */
+  isIpLockedOut(ip) {
+    const attempts = this.loginAttempts.get(ip);
+    if (!attempts) return false;
+
+    const now = Date.now();
+    const timeSinceLastAttempt = now - attempts.lastAttempt;
+
+    if (attempts.count >= this.config.maxLoginAttempts && 
+        timeSinceLastAttempt < this.config.lockoutDuration) {
+      return true;
     }
 
-    /**
-     * Verify password
-     */
-    async verifyPassword(password, hashedPassword) {
-        return bcrypt.compare(password, hashedPassword);
+    // Reset if lockout period has passed
+    if (timeSinceLastAttempt >= this.config.lockoutDuration) {
+      this.loginAttempts.delete(ip);
+      return false;
     }
 
-    /**
-     * Create new user
-     */
-    async createUser(userData) {
-        const { username, email, password, role = 'user', permissions = [] } = userData;
-        
-        if (this.users.has(username)) {
-            throw new Error('Username already exists');
-        }
-        
-        const hashedPassword = await this.hashPassword(password);
-        
-        const user = {
-            id: username,
-            username,
-            email,
-            password: hashedPassword,
-            role,
-            permissions,
-            createdAt: new Date(),
-            lastLogin: null,
-            isActive: true
-        };
-        
-        this.users.set(username, user);
-        
-        this.logger.info(`User created: ${username}`);
-        
-        return this.sanitizeUser(user);
-    }
+    return false;
+  }
 
-    /**
-     * Authorization middleware
-     */
-    authorize(requiredPermissions = [], options = {}) {
-        return (req, res, next) => {
-            if (!req.user) {
-                return res.status(401).json({
-                    error: 'AuthenticationError',
-                    message: 'Authentication required'
-                });
-            }
-            
-            // Check if user has required permissions
-            if (!this.hasPermissions(req.user, requiredPermissions, options)) {
-                return res.status(403).json({
-                    error: 'AuthorizationError',
-                    message: 'Insufficient permissions'
-                });
-            }
-            
-            next();
-        };
-    }
+  /**
+   * Record login attempt
+   * @param {string} ip - IP address
+   * @param {boolean} success - Whether login was successful
+   * @private
+   */
+  recordLoginAttempt(ip, success) {
+    const now = Date.now();
+    const attempts = this.loginAttempts.get(ip) || { count: 0, lastAttempt: 0 };
 
-    /**
-     * Check if user has required permissions
-     */
-    hasPermissions(user, requiredPermissions, options = {}) {
-        // Admin users have all permissions
-        if (user.role === 'admin' || user.permissions.includes('*')) {
-            return true;
-        }
-        
-        // Check specific permissions
-        if (options.requireAll) {
-            return requiredPermissions.every(perm => user.permissions.includes(perm));
+    if (success) {
+      this.loginAttempts.delete(ip);
         } else {
-            return requiredPermissions.some(perm => user.permissions.includes(perm));
+      attempts.count++;
+      attempts.lastAttempt = now;
+      this.loginAttempts.set(ip, attempts);
         }
     }
 
     /**
-     * Handle authentication failure
-     */
-    handleAuthFailure(res, error) {
-        res.status(401).json({
-            error: 'AuthenticationError',
-            message: error || 'Authentication failed',
-            timestamp: new Date().toISOString()
-        });
+   * Check if session is valid
+   * @param {string} userId - User ID
+   * @param {string} sessionId - Session ID
+   * @returns {boolean} Session validity
+   * @private
+   */
+  isSessionValid(userId, sessionId) {
+    const session = this.userSessions.get(sessionId);
+    if (!session || session.userId !== userId) {
+      return false;
     }
 
-    /**
-     * Sanitize user data (remove sensitive information)
-     */
-    sanitizeUser(user) {
-        const { password, ...sanitized } = user;
-        return sanitized;
+    // Update last activity
+    session.lastActivity = new Date();
+    this.userSessions.set(sessionId, session);
+
+    return true;
+  }
+
+  /**
+   * Invalidate session
+   * @param {string} sessionId - Session ID
+   */
+  invalidateSession(sessionId) {
+    this.userSessions.delete(sessionId);
+    this.logger.info('🚫 Session invalidated', { sessionId });
+  }
+
+  /**
+   * Invalidate all sessions for user
+   * @param {string} userId - User ID
+   */
+  invalidateUserSessions(userId) {
+    for (const [sessionId, session] of this.userSessions.entries()) {
+      if (session.userId === userId) {
+        this.userSessions.delete(sessionId);
+      }
     }
 
-    /**
-     * Logout user (invalidate token/session)
-     */
-    logout(req) {
-        if (req.authMethod === 'session' && req.sessionId) {
-            this.sessions.delete(req.sessionId);
-            this.stats.activeSessions--;
-        }
-        
-        // For JWT tokens, you would typically add them to a blacklist
-        // This is a simplified implementation
-        
-        this.logger.info(`User ${req.user?.username} logged out`);
+    // Remove refresh tokens for user
+    for (const [refreshToken, tokenData] of this.refreshTokens.entries()) {
+      if (tokenData.userId === userId) {
+        this.refreshTokens.delete(refreshToken);
+      }
     }
 
-    /**
-     * Revoke API key
-     */
-    revokeApiKey(apiKey) {
-        const keyData = this.apiKeys.get(apiKey);
-        if (keyData) {
-            keyData.isActive = false;
-            this.logger.info(`API key revoked: ${keyData.name}`);
-            return true;
-        }
-        return false;
+    this.logger.info('🚫 All sessions invalidated for user', { userId });
+  }
+
+  /**
+   * Get user by ID (placeholder - implement with database)
+   * @param {string} userId - User ID
+   * @returns {Object|null} User object
+   * @private
+   */
+  getUserById(userId) {
+    // This is a placeholder - implement with actual database query
+    // For now, return a mock user
+    return {
+      id: userId,
+      email: 'user@example.com',
+      roles: ['user'],
+      permissions: ['read', 'write']
+    };
     }
 
     /**
      * Clean up expired sessions and tokens
+   * @private
      */
-    cleanup() {
+  cleanupExpired() {
         const now = new Date();
         
         // Clean up expired sessions
-        for (const [sessionId, session] of this.sessions.entries()) {
-            if (session.expiresAt < now) {
-                this.sessions.delete(sessionId);
-                this.stats.activeSessions--;
-            }
-        }
-        
-        // Clean up expired API keys
-        for (const [apiKey, keyData] of this.apiKeys.entries()) {
-            if (keyData.expiresAt && keyData.expiresAt < now) {
-                keyData.isActive = false;
+    for (const [sessionId, session] of this.userSessions.entries()) {
+      const sessionAge = now - session.lastActivity;
+      if (sessionAge > 24 * 60 * 60 * 1000) { // 24 hours
+        this.userSessions.delete(sessionId);
+      }
+    }
+
+    // Clean up expired refresh tokens
+    for (const [refreshToken, tokenData] of this.refreshTokens.entries()) {
+      const tokenAge = now - tokenData.createdAt;
+      if (tokenAge > 7 * 24 * 60 * 60 * 1000) { // 7 days
+        this.refreshTokens.delete(refreshToken);
+      }
+    }
+
+    // Clean up old login attempts
+    for (const [ip, attempts] of this.loginAttempts.entries()) {
+      const attemptAge = now - attempts.lastAttempt;
+      if (attemptAge > this.config.lockoutDuration) {
+        this.loginAttempts.delete(ip);
             }
         }
     }
 
     /**
      * Get authentication statistics
+   * @returns {Object} Auth statistics
      */
     getStats() {
         return {
-            ...this.stats,
-            totalUsers: this.users.size,
-            activeApiKeys: Array.from(this.apiKeys.values()).filter(k => k.isActive).length,
-            successRate: this.stats.totalAttempts > 0 ? 
-                (this.stats.successfulLogins / this.stats.totalAttempts * 100).toFixed(2) + '%' : '0%'
+      activeSessions: this.userSessions.size,
+      activeRefreshTokens: this.refreshTokens.size,
+      lockedOutIPs: Array.from(this.loginAttempts.entries())
+        .filter(([ip, attempts]) => this.isIpLockedOut(ip)).length,
+      config: {
+        jwtExpiresIn: this.config.jwtExpiresIn,
+        refreshTokenExpiresIn: this.config.refreshTokenExpiresIn,
+        maxLoginAttempts: this.config.maxLoginAttempts,
+        lockoutDuration: this.config.lockoutDuration
+      }
         };
     }
 
     /**
-     * Shutdown authentication system
-     */
-    shutdown() {
-        this.sessions.clear();
-        this.logger.info('Authentication system shutdown complete');
-    }
+   * Start cleanup interval
+   */
+  startCleanup() {
+    // Clean up every hour
+    setInterval(() => {
+      this.cleanupExpired();
+    }, 60 * 60 * 1000);
+
+    this.logger.info('🧹 Started authentication cleanup interval');
+  }
 }
 
-module.exports = Authentication;
+module.exports = AuthenticationMiddleware;

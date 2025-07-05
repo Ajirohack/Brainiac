@@ -1,6 +1,7 @@
-const { BaseProviderClient } = require('../BaseProviderClient');
+const BaseProviderClient = require('./BaseProviderClient');
 const { ConfigurationError } = require('../../../utils/errors');
 const config = require('../../../config/llmProviders').openai;
+const { OpenAI } = require('openai');
 
 // Default model configurations
 const DEFAULT_CONFIG = {
@@ -17,8 +18,12 @@ const DEFAULT_CONFIG = {
 };
 
 /**
- * Client for interacting with the OpenAI API
+ * OpenAI Client - Implementation for OpenAI API integration
+ * 
+ * Provides chat completion, embedding generation, and streaming capabilities
+ * using the OpenAI API with proper error handling and rate limiting.
  */
+
 class OpenAIClient extends BaseProviderClient {
   /**
    * Create a new OpenAI client
@@ -71,6 +76,16 @@ class OpenAIClient extends BaseProviderClient {
         ...modelConfig
       });
     }
+
+    // Initialize OpenAI client
+    this.client = new OpenAI({
+      apiKey: this.apiKey,
+      baseURL: this.baseUrl,
+      maxRetries: this.maxRetries,
+      timeout: this.timeout
+    });
+
+    this.logger.info('🤖 OpenAI client initialized');
   }
 
   /**
@@ -84,52 +99,27 @@ class OpenAIClient extends BaseProviderClient {
    * @returns {Promise<Object>} The completion response
    */
   async createChatCompletion({ model, messages, options = {}, stream = false, onData }) {
-    const requestId = uuidv4();
-    const endpoint = '/chat/completions';
-    
     try {
-      // Prepare the request body
-      const body = {
+      this.logger.debug(`📝 Creating chat completion with model: ${model}`);
+
+      const requestOptions = {
         model: model || this.defaultModel,
-        messages: this._prepareMessages(messages),
-        ...options,
+        messages: this.formatMessages(messages),
+        max_tokens: options.max_tokens || this.maxTokens,
+        temperature: options.temperature || this.temperature,
+        stream: stream,
+        ...options
       };
-      
-      // Handle streaming
-      if (stream) {
-        return this._handleStreamingRequest({
-          endpoint,
-          body: { ...body, stream: true },
-          onData,
-          requestId,
-        });
+
+      if (stream && onData) {
+        return await this.handleStreamingCompletion(requestOptions, onData);
+      } else {
+        const response = await this.client.chat.completions.create(requestOptions);
+        return this.formatCompletionResponse(response);
       }
-      
-      // Make the request
-      const response = await this._makeRequest({
-        method: 'POST',
-        endpoint,
-        body,
-      });
-      
-      // Transform the response to a standard format
-      return this._transformChatCompletionResponse(response);
-      
+
     } catch (error) {
-      this.logger.error('OpenAI chat completion failed', {
-        requestId,
-        error: error.message,
-        stack: error.stack,
-        model,
-        messageCount: messages?.length,
-      });
-      
-      throw this._enhanceError(error, {
-        provider: 'openai',
-        requestId,
-        model,
-        endpoint,
-      });
+      this.handleError(error, 'chat completion');
     }
   }
 
@@ -137,45 +127,258 @@ class OpenAIClient extends BaseProviderClient {
    * Create embeddings
    * @param {Object} params - Embedding parameters
    * @param {string|string[]} params.input - The input text or array of texts
-   * @param {string} [params.model] - The model to use (default: from config)
+   * @param {string} [params.model] - The model to use
    * @returns {Promise<Object>} The embeddings response
    */
-  async createEmbedding({ input, model = this.defaultEmbeddingModel }) {
-    const requestId = uuidv4();
-    const endpoint = '/embeddings';
-    
+  async createEmbedding({ input, model }) {
     try {
-      // Prepare the request body
-      const body = {
-        model,
+      this.logger.debug(`🔍 Creating embeddings with model: ${model || this.defaultEmbeddingModel}`);
+
+      const response = await this.client.embeddings.create({
         input: Array.isArray(input) ? input : [input],
-      };
-      
-      // Make the request
-      const response = await this._makeRequest({
-        method: 'POST',
-        endpoint,
-        body,
+        model: model || this.defaultEmbeddingModel
       });
-      
-      // Transform the response to a standard format
-      return this._transformEmbeddingResponse(response);
-      
+
+      return this.formatEmbeddingResponse(response);
+
     } catch (error) {
-      this.logger.error('OpenAI embedding creation failed', {
-        requestId,
-        error: error.message,
-        stack: error.stack,
-        model,
-        inputType: Array.isArray(input) ? 'array' : 'string',
-      });
+      this.handleError(error, 'embedding generation');
+    }
+  }
+
+  /**
+   * Handle streaming completion
+   * @param {Object} options - Request options
+   * @param {Function} onData - Data callback
+   * @returns {Promise<Object>} Streaming response
+   */
+  async handleStreamingCompletion(options, onData) {
+    try {
+      const stream = await this.client.chat.completions.create(options);
       
-      throw this._enhanceError(error, {
-        provider: 'openai',
-        requestId,
-        model,
-        endpoint,
-      });
+      let fullContent = '';
+      let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+
+      for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content || '';
+        fullContent += content;
+
+        // Update usage if available
+        if (chunk.usage) {
+          usage = chunk.usage;
+        }
+
+        // Call the data callback
+        if (onData) {
+          onData({
+            content: content,
+            chunk: chunk,
+            isComplete: false
+          });
+        }
+      }
+
+      // Send completion signal
+      if (onData) {
+        onData({
+          content: '',
+          chunk: null,
+          isComplete: true,
+          fullContent: fullContent,
+          usage: usage
+        });
+      }
+
+      return {
+        content: fullContent,
+        usage: usage,
+        model: options.model,
+        streamed: true
+      };
+
+    } catch (error) {
+      this.handleError(error, 'streaming completion');
+    }
+  }
+
+  /**
+   * Format messages for OpenAI API
+   * @param {Array} messages - Array of message objects
+   * @returns {Array} Formatted messages
+   */
+  formatMessages(messages) {
+    return messages.map(message => ({
+      role: message.role,
+      content: message.content,
+      ...(message.name && { name: message.name }),
+      ...(message.function_call && { function_call: message.function_call }),
+      ...(message.tool_calls && { tool_calls: message.tool_calls })
+    }));
+  }
+
+  /**
+   * Format completion response
+   * @param {Object} response - OpenAI response
+   * @returns {Object} Formatted response
+   */
+  formatCompletionResponse(response) {
+    return {
+      content: response.choices[0]?.message?.content || '',
+      model: response.model,
+      usage: response.usage,
+      finish_reason: response.choices[0]?.finish_reason,
+      id: response.id,
+      created: response.created,
+      object: response.object
+    };
+  }
+
+  /**
+   * Format embedding response
+   * @param {Object} response - OpenAI response
+   * @returns {Object} Formatted response
+   */
+  formatEmbeddingResponse(response) {
+    return {
+      embeddings: response.data.map(item => ({
+        embedding: item.embedding,
+        index: item.index
+      })),
+      model: response.model,
+      usage: response.usage,
+      object: response.object
+    };
+  }
+
+  /**
+   * Handle errors with provider-specific logic
+   * @param {Error} error - The error object
+   * @param {string} operation - The operation that failed
+   */
+  handleError(error, operation) {
+    let errorMessage = `OpenAI ${operation} failed`;
+    let errorCode = 'UNKNOWN_ERROR';
+
+    if (error.response) {
+      const status = error.response.status;
+      const data = error.response.data;
+
+      switch (status) {
+        case 400:
+          errorCode = 'BAD_REQUEST';
+          errorMessage = `Invalid request: ${data.error?.message || 'Bad request'}`;
+          break;
+        case 401:
+          errorCode = 'UNAUTHORIZED';
+          errorMessage = 'Invalid API key or authentication failed';
+          break;
+        case 403:
+          errorCode = 'FORBIDDEN';
+          errorMessage = 'API key does not have permission for this operation';
+          break;
+        case 429:
+          errorCode = 'RATE_LIMIT_EXCEEDED';
+          errorMessage = 'Rate limit exceeded. Please try again later.';
+          break;
+        case 500:
+          errorCode = 'SERVER_ERROR';
+          errorMessage = 'OpenAI server error. Please try again later.';
+          break;
+        default:
+          errorCode = `HTTP_${status}`;
+          errorMessage = `HTTP ${status}: ${data.error?.message || 'Unknown error'}`;
+      }
+    } else if (error.code) {
+      switch (error.code) {
+        case 'ECONNRESET':
+        case 'ETIMEDOUT':
+          errorCode = 'NETWORK_ERROR';
+          errorMessage = 'Network connection failed. Please check your internet connection.';
+          break;
+        default:
+          errorCode = error.code;
+          errorMessage = error.message;
+      }
+    } else {
+      errorMessage = error.message;
+    }
+
+    this.logger.error(`❌ ${errorMessage}`, {
+      errorCode,
+      operation,
+      timestamp: new Date().toISOString()
+    });
+
+    const enhancedError = new Error(errorMessage);
+    enhancedError.code = errorCode;
+    enhancedError.originalError = error;
+    enhancedError.operation = operation;
+
+    throw enhancedError;
+  }
+
+  /**
+   * Get provider capabilities
+   * @returns {Object} Provider capabilities
+   */
+  getCapabilities() {
+    return {
+      provider: 'openai',
+      models: [
+        'gpt-4',
+        'gpt-4-turbo',
+        'gpt-4-turbo-preview',
+        'gpt-3.5-turbo',
+        'gpt-3.5-turbo-16k'
+      ],
+      features: {
+        chat_completion: true,
+        streaming: true,
+        embeddings: true,
+        function_calling: true,
+        tool_calling: true
+      },
+      limits: {
+        max_tokens: 128000, // GPT-4 Turbo
+        max_requests_per_minute: 3500,
+        max_tokens_per_minute: 90000
+      }
+    };
+  }
+
+  /**
+   * Get authentication headers
+   * @protected
+   * @returns {Object} Headers for authentication
+   */
+  _getAuthHeaders() {
+    const headers = {
+      'Authorization': `Bearer ${this.apiKey}`,
+    };
+    
+    if (this.organization) {
+      headers['OpenAI-Organization'] = this.organization;
+    }
+    
+    if (this.project) {
+      headers['OpenAI-Project'] = this.project;
+    }
+    
+    return headers;
+  }
+
+  /**
+   * Test the connection to OpenAI
+   * @returns {Promise<boolean>} Connection status
+   */
+  async testConnection() {
+    try {
+      const response = await this.client.models.list();
+      this.logger.info('✅ OpenAI connection test successful');
+      return true;
+    } catch (error) {
+      this.logger.error('❌ OpenAI connection test failed:', error.message);
+      return false;
     }
   }
 
@@ -226,310 +429,6 @@ class OpenAIClient extends BaseProviderClient {
         endpoint,
       });
     }
-  }
-
-  /**
-   * Get authentication headers
-   * @protected
-   * @returns {Object} Headers for authentication
-   */
-  _getAuthHeaders() {
-    const headers = {
-      'Authorization': `Bearer ${this.apiKey}`,
-    };
-    
-    if (this.organization) {
-      headers['OpenAI-Organization'] = this.organization;
-    }
-    
-    if (this.project) {
-      headers['OpenAI-Project'] = this.project;
-    }
-    
-    return headers;
-  }
-
-  /**
-   * Handle streaming request
-   * @private
-   */
-  async _handleStreamingRequest({ endpoint, body, onData, requestId }) {
-    try {
-      const response = await this._makeRequest({
-        method: 'POST',
-        endpoint,
-        body,
-        stream: true,
-      });
-      
-      if (!response) {
-        throw new Error('No response received from OpenAI API');
-      }
-      
-      // Handle the stream
-      const reader = response.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let buffer = '';
-      
-      // Process the stream
-      const processStream = async () => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            
-            if (done) {
-              break;
-            }
-            
-            // Decode the chunk
-            const chunk = decoder.decode(value, { stream: true });
-            buffer += chunk;
-            
-            // Process complete SSE events
-            const lines = buffer.split('\n\n');
-            buffer = lines.pop() || '';
-            
-            for (const line of lines) {
-              if (line.trim() === '') continue;
-              
-              try {
-                const event = this._parseSSEEvent(line);
-                
-                if (event.data === '[DONE]') {
-                  // End of stream
-                  if (onData) {
-                    onData({ done: true });
-                  }
-                  return;
-                }
-                
-                const data = JSON.parse(event.data);
-                
-                // Transform the chunk to a standard format
-                const transformed = this._transformStreamingChunk(data);
-                
-                // Emit the chunk
-                if (onData) {
-                  onData({
-                    ...transformed,
-                    done: false,
-                  });
-                }
-                
-                this.emit('chunk', transformed);
-                
-              } catch (parseError) {
-                this.logger.error('Error parsing SSE event', {
-                  requestId,
-                  error: parseError.message,
-                  data: line,
-                });
-              }
-            }
-          }
-          
-          // Handle any remaining data in the buffer
-          if (buffer.trim()) {
-            try {
-              const event = this._parseSSEEvent(buffer);
-              if (event.data !== '[DONE]') {
-                const data = JSON.parse(event.data);
-                const transformed = this._transformStreamingChunk(data);
-                
-                if (onData) {
-                  onData({
-                    ...transformed,
-                    done: true,
-                  });
-                }
-                
-                this.emit('chunk', {
-                  ...transformed,
-                  done: true,
-                });
-              }
-            } catch (e) {
-              this.logger.error('Error processing final chunk', {
-                requestId,
-                error: e.message,
-                data: buffer,
-              });
-            }
-          }
-          
-          // Signal completion
-          if (onData) {
-            onData({ done: true });
-          }
-          
-        } catch (error) {
-          this.logger.error('Error processing stream', {
-            requestId,
-            error: error.message,
-            stack: error.stack,
-          });
-          
-          if (onData) {
-            onData({
-              error: this._enhanceError(error, { requestId }),
-              done: true,
-            });
-          }
-          
-          throw error;
-        }
-      };
-      
-      // Start processing the stream
-      processStream().catch(error => {
-        this.logger.error('Stream processing failed', {
-          requestId,
-          error: error.message,
-          stack: error.stack,
-        });
-      });
-      
-      // Return a dummy response for streaming
-      return {
-        id: `chatcmpl-${requestId}`,
-        object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
-        model: body.model,
-        choices: [],
-        usage: null,
-        streaming: true,
-      };
-      
-    } catch (error) {
-      this.logger.error('Streaming request failed', {
-        requestId,
-        error: error.message,
-        stack: error.stack,
-        endpoint,
-      });
-      
-      throw this._enhanceError(error, { requestId });
-    }
-  }
-
-  /**
-   * Parse an SSE event
-   * @private
-   */
-  _parseSSEEvent(data) {
-    const event = {
-      data: '',
-      event: null,
-      id: null,
-      retry: null,
-    };
-    
-    const lines = data.split(/\r?\n/);
-    
-    for (const line of lines) {
-      const match = line.match(/^(\w+):\s*(.*)$/);
-      if (!match) continue;
-      
-      const [, key, value] = match;
-      
-      switch (key.toLowerCase()) {
-        case 'event':
-          event.event = value;
-          break;
-        case 'data':
-          event.data = value;
-          break;
-        case 'id':
-          event.id = value;
-          break;
-        case 'retry':
-          event.retry = parseInt(value, 10);
-          break;
-      }
-    }
-    
-    return event;
-  }
-
-  /**
-   * Transform chat completion response to standard format
-   * @private
-   */
-  _transformChatCompletionResponse(response) {
-    if (!response || !response.choices || !Array.isArray(response.choices)) {
-      throw new Error('Invalid response format from OpenAI API');
-    }
-    
-    return {
-      id: response.id,
-      object: response.object,
-      created: response.created,
-      model: response.model,
-      choices: response.choices.map(choice => ({
-        index: choice.index,
-        message: {
-          role: choice.message.role,
-          content: choice.message.content,
-          function_call: choice.message.function_call,
-        },
-        finish_reason: choice.finish_reason,
-      })),
-      usage: response.usage ? {
-        prompt_tokens: response.usage.prompt_tokens,
-        completion_tokens: response.usage.completion_tokens,
-        total_tokens: response.usage.total_tokens,
-      } : null,
-    };
-  }
-
-  /**
-   * Transform streaming chunk to standard format
-   * @private
-   */
-  _transformStreamingChunk(chunk) {
-    if (!chunk.choices || !Array.isArray(chunk.choices)) {
-      throw new Error('Invalid chunk format from OpenAI API');
-    }
-    
-    return {
-      id: chunk.id,
-      object: chunk.object,
-      created: chunk.created,
-      model: chunk.model,
-      choices: chunk.choices.map(choice => ({
-        index: choice.index,
-        delta: {
-          role: choice.delta.role,
-          content: choice.delta.content || '',
-          function_call: choice.delta.function_call,
-        },
-        finish_reason: choice.finish_reason,
-      })),
-    };
-  }
-
-  /**
-   * Transform embedding response to standard format
-   * @private
-   */
-  _transformEmbeddingResponse(response) {
-    if (!response || !response.data || !Array.isArray(response.data)) {
-      throw new Error('Invalid embedding response format from OpenAI API');
-    }
-    
-    return {
-      object: response.object,
-      data: response.data.map(item => ({
-        object: item.object,
-        embedding: item.embedding,
-        index: item.index,
-      })),
-      model: response.model,
-      usage: response.usage ? {
-        prompt_tokens: response.usage.prompt_tokens,
-        total_tokens: response.usage.total_tokens,
-      } : null,
-    };
   }
 
   /**
@@ -609,19 +508,6 @@ class OpenAIClient extends BaseProviderClient {
     // For security reasons, we'll just return the key as-is in this example
     // In production, use proper encryption/decryption with the IV
     return encryptedKey;
-  }
-
-  /**
-   * Prepare messages for the OpenAI API
-   * @private
-   */
-  _prepareMessages(messages) {
-    return messages.map(msg => ({
-      role: msg.role,
-      content: msg.content,
-      ...(msg.name && { name: msg.name }),
-      ...(msg.function_call && { function_call: msg.function_call }),
-    }));
   }
 }
 

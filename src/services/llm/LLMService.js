@@ -15,11 +15,24 @@ class LLMService extends EventEmitter {
    */
   constructor({ logger: loggerInstance, db } = {}) {
     super();
-    this.logger = loggerInstance || logger;
+    // Ensure logger has required methods
+    this.logger = loggerInstance || {
+      info: console.log.bind(console, '[INFO]'),
+      error: console.error.bind(console, '[ERROR]'),
+      warn: console.warn.bind(console, '[WARN]'),
+      debug: console.debug ? console.debug.bind(console, '[DEBUG]') : console.log.bind(console, '[DEBUG]'),
+    };
+    
     this.db = db;
     this.providerFactory = getProviderFactory({ logger: this.logger, db: this.db });
     this.initialized = false;
     this.initializationPromise = null;
+    
+    if (typeof this.logger.info === 'function') {
+      this.logger.info('🤖 LLM Service initialized');
+    } else {
+      console.log('🤖 LLM Service initialized (fallback logger)');
+    }
   }
 
   /**
